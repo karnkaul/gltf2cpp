@@ -47,6 +47,16 @@ enum class AlphaMode : std::uint32_t {
 	eMask,
 };
 
+enum class PrimitiveMode : std::uint32_t {
+	ePoints = 0,
+	eLines = 1,
+	eLineLoop = 2,
+	eLineStrip = 3,
+	eTriangles = 4,
+	eTriangleStrip = 5,
+	eTriangleFan = 6,
+};
+
 ///
 /// \brief GLTF Animation Interpolation.
 ///
@@ -393,6 +403,18 @@ struct Material {
 };
 
 ///
+/// \brief GLTF Morph Target.
+///
+struct MorphTarget {
+	AttributeMap attributes{};
+	std::vector<Vec3> positions{};
+	std::vector<Vec3> normals{};
+	std::vector<Vec4> tangents{};
+	std::vector<std::vector<Vec2>> tex_coords{};
+	std::vector<std::vector<Vec3>> colors{};
+};
+
+///
 /// \brief GLTF Mesh and its primitives.
 ///
 struct Mesh {
@@ -403,12 +425,15 @@ struct Mesh {
 		Geometry geometry{};
 		std::optional<Index<Accessor>> indices{};
 		std::optional<Index<Material>> material{};
+		std::vector<MorphTarget> targets{};
+		PrimitiveMode mode{PrimitiveMode::eTriangles};
 		dj::Json extensions{};
 		dj::Json extras{};
 	};
 
 	std::string name{unnamed_v};
 	std::vector<Primitive> primitives{};
+	std::vector<float> weights{};
 	dj::Json extensions{};
 	dj::Json extras{};
 };
@@ -419,26 +444,13 @@ struct Skin;
 /// \brief GLTF Scene Node.
 ///
 struct Node {
-	///
-	/// \brief Name of the node.
-	///
 	std::string name{unnamed_v};
-	///
-	/// \brief Transform for the node.
-	///
 	Transform transform{};
-	///
-	/// \brief Indices of child nodes.
-	///
 	std::vector<Index<Node>> children{};
-	///
-	/// \brief Index of the node.
-	///
-	Index<Node> index{};
-
 	std::optional<Index<Camera>> camera{};
 	std::optional<Index<Mesh>> mesh{};
 	std::optional<Index<Skin>> skin{};
+	std::vector<float> weights{};
 	dj::Json extensions{};
 	dj::Json extras{};
 };

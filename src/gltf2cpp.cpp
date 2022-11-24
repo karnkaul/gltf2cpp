@@ -325,13 +325,25 @@ struct GltfParser {
 		s.extras = json["extras"];
 	}
 
-	void populate_geometry(Geometry& out, std::optional<Index<Accessor>> indices) const {
+	template <typename T>
+	void populate(T& out) const {
 		auto const& attributes = out.attributes;
 		auto const it_pos = attributes.find("POSITION");
 		if (it_pos == attributes.end()) { return; }
-		out.positions = storage.accessors[it_pos->second].to_vec<3>();
-		if (auto const it_tan = attributes.find("TANGENT"); it_tan != attributes.end()) { out.tangents = storage.accessors[it_tan->second].to_vec<4>(); }
-		auto populate = [&](std::string_view prefix, auto& out_vec, auto to_vec) {
+		out.positions = storage.accessors[it_pos->second].template to_vec<3>();
+		if (auto it_norm = attributes.find("NORMAL"); it_norm != attributes.end()) { out.normals = storage.accessors[it_norm->second].template to_vec<3>(); }
+		if (auto it_tan = attributes.find("TANGENT"); it_tan != attributes.end()) {
+			// some sample files use vec3 tangents
+			auto const& accessor = storage.accessors[it_tan->second];
+			if (accessor.type == Accessor::Type::eVec4) {
+				out.tangents = accessor.template to_vec<4>();
+			} else if (accessor.type == Accessor::Type::eVec3) {
+				auto vec = accessor.template to_vec<3>();
+				out.tangents.reserve(vec.size());
+				for (auto const& v : vec) { out.tangents.push_back({v[0], v[1], v[2], 0.0f}); }
+			}
+		}
+		auto do_populate = [&](std::string_view prefix, auto& out_vec, auto to_vec) {
 			for (std::size_t index = 0;; ++index) {
 				auto const key = std::string{prefix} + std::to_string(index);
 				auto it_col = attributes.find(key);
@@ -343,9 +355,8 @@ struct GltfParser {
 				}
 			}
 		};
-		populate("COLOR_", out.colors, [](auto const& a) { return to_rgbs(a); });
-		populate("TEXCOORD_", out.tex_coords, [](auto const& a) { return a.template to_vec<2>(); });
-		if (indices) { out.indices = storage.accessors[*indices].to_u32(); }
+		do_populate("COLOR_", out.colors, [](auto const& a) { return to_rgbs(a); });
+		do_populate("TEXCOORD_", out.tex_coords, [](auto const& a) { return a.template to_vec<2>(); });
 	}
 
 	Mesh::Primitive primitive(dj::Json const& json) const {
@@ -353,19 +364,33 @@ struct GltfParser {
 		auto ret = Mesh::Primitive{};
 		ret.extensions = json["extensions"];
 		ret.extras = json["extras"];
+		ret.mode = static_cast<PrimitiveMode>(json["mode"].as<int>(static_cast<int>(PrimitiveMode::eTriangles)));
 		ret.geometry.attributes = make_attributes(json["attributes"]);
-		if (auto const& indices = json["indices"]) { ret.indices = indices.as<std::size_t>(); }
+		if (auto const& indices = json["indices"]) {
+			ret.indices = indices.as<std::size_t>();
+			ret.geometry.indices = storage.accessors[*ret.indices].to_u32();
+		}
 		if (auto const& material = json["material"]) { ret.material = material.as<std::size_t>(); }
-		populate_geometry(ret.geometry, ret.indices);
+		populate(ret.geometry);
+		for (auto const& target : json["targets"].array_view()) {
+			auto& morph_target = ret.targets.emplace_back();
+			morph_target.attributes = make_attributes(target);
+			populate(morph_target);
+		}
 		return ret;
 	}
 
 	void mesh(dj::Json const& json) {
+		auto const& primitives = json["primitives"].array_view();
+		EXPECT(!primitives.empty());
 		auto& m = storage.meshes.emplace_back();
 		m.name = json["name"].as_string(m.name);
 		m.extensions = json["extensions"];
 		m.extras = json["extras"];
-		for (auto const& j : json["primitives"].array_view()) { m.primitives.push_back(primitive(j)); }
+		for (auto const& j : primitives) { m.primitives.push_back(primitive(j)); }
+		for (auto const& j : json["weights"].array_view()) { m.weights.push_back(j.as<float>()); }
+		[[maybe_unused]] auto const target_count = m.primitives[0].targets.size();
+		EXPECT(std::all_of(m.primitives.begin(), m.primitives.end(), [target_count](auto const& p) { return p.targets.size() == target_count; }));
 	}
 
 	void image(dj::Json const& json) {
@@ -536,6 +561,7 @@ struct GltfParser {
 		for (auto const& t : scene["textures"].array_view()) { texture(t); }
 		for (auto const& m : scene["meshes"].array_view()) { mesh(m); }
 		for (auto const& m : scene["materials"].array_view()) { material(m); }
+		for (auto const& a : scene["animations"].array_view()) { animation(a); }
 
 		// Texture will use ColourSpace::sRGB by default; change non-colour textures to be linear
 		auto set_linear = [this](std::size_t index) { storage.textures[index].linear = true; };
@@ -633,10 +659,20 @@ Root Parser::parse(GetBytes const& get_bytes) const {
 	ret.nodes.reserve(nodes.size());
 	for (auto const& jnode : nodes) {
 		auto node = Node{.name = jnode["name"].as<std::string>()};
-		node.index = ret.nodes.size();
 		node.transform = get_transform(jnode);
 		for (auto const& child : jnode["children"].array_view()) { node.children.push_back(child.as<std::size_t>()); }
-		if (auto const& mesh = jnode["mesh"]) { node.mesh = mesh.as<std::size_t>(); }
+		for (auto const& weight : jnode["weights"].array_view()) { node.weights.push_back(weight.as<float>()); }
+		if (auto const& mesh = jnode["mesh"]) {
+			node.mesh = mesh.as<std::size_t>();
+			if (node.weights.empty()) {
+				auto const& m = ret.meshes[*node.mesh];
+				if (m.weights.empty()) {
+					node.weights.resize(m.primitives[0].targets.size());
+				} else {
+					node.weights = m.weights;
+				}
+			}
+		}
 		if (auto const& camera = jnode["camera"]) { node.camera = camera.as<std::size_t>(); }
 		ret.nodes.push_back(std::move(node));
 	}
