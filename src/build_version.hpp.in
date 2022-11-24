@@ -1,0 +1,9 @@
+#include <gltf2cpp/version.hpp>
+
+namespace gltf2cpp {
+constexpr auto version_v = Version{
+	.major = @PROJECT_VERSION_MAJOR@,
+	.minor = @PROJECT_VERSION_MINOR@,
+	.patch = @PROJECT_VERSION_PATCH@,
+};
+}
