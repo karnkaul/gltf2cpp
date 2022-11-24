@@ -3,6 +3,9 @@
 #include <string>
 
 namespace gltf2cpp {
+///
+/// \brief Semantic version.
+///
 struct Version {
 	std::uint32_t major{};
 	std::uint32_t minor{};

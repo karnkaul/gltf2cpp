@@ -14,6 +14,7 @@ if(PROJECT_NAME STREQUAL CMAKE_PROJECT_NAME)
   set(is_root_project ON)
 endif()
 
+option(GLTF2CPP_DYNARRAY_DEBUG_VIEW "Enable debug views in DynArray instances" ${is_root_project})
 option(GLTF2CPP_BUILD_TESTS "Build gltf2cpp tests" ${is_root_project})
 
 include(FetchContent)
@@ -36,6 +37,8 @@ target_include_directories(${PROJECT_NAME} PUBLIC
   "${CMAKE_CURRENT_BINARY_DIR}/include"
 )
 target_link_libraries(${PROJECT_NAME} PUBLIC djson::djson)
+
+target_compile_definitions(${PROJECT_NAME} PUBLIC $<$<BOOL:${GLTF2CPP_DYNARRAY_DEBUG_VIEW}>:GLTF2CPP_DYNARRAY_DEBUG_VIEW>)
 
 configure_file(src/build_version.hpp.in "${CMAKE_CURRENT_BINARY_DIR}/include/${PROJECT_NAME}/build_version.hpp" @ONLY)
 
