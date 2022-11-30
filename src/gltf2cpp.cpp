@@ -48,6 +48,7 @@ struct BufferView {
 	std::size_t offset{};
 	std::size_t length{};
 	BufferTarget target{};
+	std::optional<std::size_t> stride{};
 
 	std::span<std::byte const> to_span(Buffer const& buffer) const {
 		if (offset + buffer.size() < length) { throw Error{"todo: gltf error"}; }
@@ -61,6 +62,7 @@ struct AccessorLayout {
 	dj::Json const& max{};
 	std::size_t count{};
 	std::size_t component_coeff{};
+	std::optional<std::size_t> stride{};
 
 	constexpr std::size_t container_size() const { return count * component_coeff; }
 };
@@ -171,16 +173,24 @@ constexpr void apply_limit(std::span<T> out, dj::Json::ArrayProxy const& source,
 }
 
 template <ComponentType C>
-auto make_component_data(std::span<std::byte const> span, AccessorLayout ads) {
+auto make_component_data(std::span<std::byte const> span, AccessorLayout layout) {
 	using T = FromComponentType<C>;
-	auto arr = DynArray<T>{ads.container_size()};
+	auto arr = DynArray<T>{layout.container_size()};
 	if (!span.empty()) {
-		auto const size_bytes = ads.container_size() * sizeof(T);
-		EXPECT(span.size() >= size_bytes);
-		std::memcpy(arr.data(), span.data(), size_bytes);
+		auto const size_bytes = layout.container_size() * sizeof(T);
+		EXPECT(span.size() * layout.stride.value_or(1) >= size_bytes);
+		if (layout.stride) {
+			for (std::size_t i = 0; i < layout.count; ++i) {
+				auto& t = arr.span()[i * layout.component_coeff];
+				std::memcpy(&t, span.data(), sizeof(T) * layout.component_coeff);
+				span = span.subspan(*layout.stride);
+			}
+		} else {
+			std::memcpy(arr.data(), span.data(), size_bytes);
+		}
 	}
-	if (ads.min) { apply_limit<Bound::eFloor>(arr.span(), ads.min.array_view(), ads.component_coeff); }
-	if (ads.max) { apply_limit<Bound::eCeil>(arr.span(), ads.max.array_view(), ads.component_coeff); }
+	if (layout.min) { apply_limit<Bound::eFloor>(arr.span(), layout.min.array_view(), layout.component_coeff); }
+	if (layout.max) { apply_limit<Bound::eCeil>(arr.span(), layout.max.array_view(), layout.component_coeff); }
 	arr.debug_refresh();
 	return arr;
 }
@@ -267,6 +277,7 @@ struct GltfParser {
 		bv.length = json["byteLength"].as<std::size_t>();
 		bv.offset = json["byteOffset"].as<std::size_t>(0);
 		bv.target = static_cast<BufferTarget>(json["target"].as<int>());
+		if (auto const& stride = json["byteStride"]) { bv.stride = stride.as<std::size_t>(); }
 	}
 
 	void accessor(dj::Json const& json) {
@@ -277,9 +288,11 @@ struct GltfParser {
 		a.name = json["name"].as_string(a.name);
 		a.normalized = json["normalized"].as_bool(dj::Boolean{false}).value;
 		auto bytes = std::span<std::byte const>{};
+		auto stride = std::optional<std::size_t>{};
 		if (auto const& bv = json["bufferView"]) {
 			auto const& view = buffer_views[bv.as<std::size_t>()];
 			bytes = view.to_span(buffers[view.buffer]).subspan(json["byteOffset"].as<std::size_t>(0));
+			stride = view.stride;
 		}
 		a.extensions = json["extensions"];
 		a.extras = json["extras"];
@@ -289,6 +302,7 @@ struct GltfParser {
 			.max = json["max"],
 			.count = json["count"].as<std::size_t>(),
 			.component_coeff = Accessor::type_coeff(a.type),
+			.stride = stride,
 		};
 		a.data = make_accessor_data(bytes, a.component_type, layout);
 	}
