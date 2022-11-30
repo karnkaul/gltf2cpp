@@ -89,7 +89,7 @@ int main() {
 		EXPECT(primitive.geometry.indices[0] == 0);
 		EXPECT(primitive.geometry.indices[1] == 1);
 		EXPECT(primitive.geometry.indices[2] == 2);
-		gltf2cpp::Vec3 const positions[] = {
+		gltf2cpp::Vec<3> const positions[] = {
 			{0.0f, 0.0f, 0.0f},
 			{1.0f, 0.0f, 0.0f},
 			{0.0f, 1.0f, 0.0f},

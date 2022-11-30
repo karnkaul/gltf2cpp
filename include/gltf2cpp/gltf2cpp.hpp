@@ -15,23 +15,25 @@ namespace gltf2cpp {
 ///
 /// \brief Alias for an index for a particular type.
 ///
-template <typename T>
+template <typename Type>
 using Index = std::size_t;
 
 ///
-/// \brief Geometric vector modelled as an array of floats.
+/// \brief Geometric vector modelled as an array of Types.
 ///
-template <std::size_t Dim>
-using Vec = std::array<float, Dim>;
+template <typename Type, std::size_t Dim>
+using TVec = std::array<Type, Dim>;
 
-using Vec2 = Vec<2>;
-using Vec3 = Vec<3>;
-using Vec4 = Vec<4>;
+template <std::size_t Dim>
+using Vec = TVec<float, Dim>;
+
+template <std::size_t Dim>
+using UVec = TVec<std::uint32_t, Dim>;
 
 ///
 /// \brief 4x4 float matrix.
 ///
-using Mat4x4 = std::array<Vec4, 4>;
+using Mat4x4 = std::array<Vec<4>, 4>;
 
 ///
 /// \brief Alias for callable that returns bytes given a URI.
@@ -129,9 +131,9 @@ using FromComponentType = decltype(from_component_type<C>());
 /// \brief GLTF Transform encoded as Translation, Rotation, Scale.
 ///
 struct Trs {
-	Vec3 translation{};
-	Vec4 rotation{{1.0f, 0.0f, 0.0f, 0.0f}};
-	Vec3 scale{Vec3{{1.0f, 1.0f, 1.0f}}};
+	Vec<3> translation{};
+	Vec<4> rotation{{1.0f, 0.0f, 0.0f, 0.0f}};
+	Vec<3> scale{Vec<3>{{1.0f, 1.0f, 1.0f}}};
 };
 
 ///
@@ -150,7 +152,7 @@ inline constexpr char const* unnamed_v{"(Unnamed)"};
 /// gltf2cpp does not expose raw GLTF Buffers or BufferViews; instead each Accessor's data
 /// is pre-interpreted and stored directly within it as a flat array of ComponentType.
 /// Eg, Data for Type::eVec4 / ComponentType::Float will contain 4x float components
-/// for each element (and not a Vec4 for each element).
+/// for each element (and not a Vec<4> for each element).
 ///
 struct Accessor {
 	template <ComponentType C>
@@ -194,7 +196,7 @@ struct Accessor {
 	/// \brief Obtain data as a vector of u32.
 	/// \returns Data as std::vector of u32
 	///
-	/// type must be Type::eScalar, and component_type must be unsigned.
+	/// component_type must be unsigned.
 	///
 	std::vector<std::uint32_t> to_u32() const;
 
@@ -324,20 +326,28 @@ using AttributeMap = std::unordered_map<std::string, Index<Accessor>>;
 /// tex_coords and colors are nested vectors, where the Ith element corresponds to SEMANTIC_I,
 /// eg. tex_coords[2] is populated from the TEXCOORD_2 Attribute's Accessor.
 ///
-/// These vectors will only be populated if the corresponding Accessor's ComponentType is eFloat.
+/// These vectors (except indices and joints) will only be populated if the corresponding
+/// Accessor's ComponentType is eFloat.
 /// For other component types, obtain and use the Accessor directly.
 /// Since the POSITION Attribute is required to be in Accessor::Type::eVec3 / ComponentType::eFloat
 /// format by the GLTF spec, .positions is always expected to be populated.
-/// All vectors will either be empty or the same size as positions.
+/// normals, tangents, tex_coords, and colors will either be empty or the same size as positions.
+/// joints and weights will have the same size.
+///
+/// Note: weights is only parsed if the ComponentType is eFloat. Otherwise the corresponding
+/// array will be empty.
 ///
 struct Geometry {
 	AttributeMap attributes{};
-	std::vector<Vec3> positions{};
-	std::vector<Vec3> normals{};
-	std::vector<Vec4> tangents{};
-	std::vector<std::vector<Vec2>> tex_coords{};
-	std::vector<std::vector<Vec3>> colors{};
+	std::vector<Vec<3>> positions{};
+	std::vector<Vec<3>> normals{};
+	std::vector<Vec<4>> tangents{};
+	std::vector<std::vector<Vec<2>>> tex_coords{};
+	std::vector<std::vector<Vec<3>>> colors{};
 	std::vector<std::uint32_t> indices{};
+
+	std::vector<std::vector<UVec<4>>> joints{};
+	std::vector<std::vector<Vec<4>>> weights{};
 };
 
 struct Texture;
@@ -378,7 +388,7 @@ struct OcclusionTextureInfo {
 struct PbrMetallicRoughness {
 	std::optional<TextureInfo> base_color_texture{};
 	std::optional<TextureInfo> metallic_roughness_texture{};
-	Vec4 base_color_factor{1.0f, 1.0f, 1.0f, 1.0f};
+	Vec<4> base_color_factor{1.0f, 1.0f, 1.0f, 1.0f};
 	float metallic_factor{1.0f};
 	float roughness_factor{1.0f};
 	dj::Json extensions{};
@@ -394,7 +404,7 @@ struct Material {
 	std::optional<NormalTextureInfo> normal_texture{};
 	std::optional<OcclusionTextureInfo> occlusion_texture{};
 	std::optional<TextureInfo> emissive_texture{};
-	Vec3 emissive_factor{};
+	Vec<3> emissive_factor{};
 	AlphaMode alpha_mode{AlphaMode::eOpaque};
 	float alpha_cutoff{0.5f};
 	bool double_sided{};
@@ -407,11 +417,11 @@ struct Material {
 ///
 struct MorphTarget {
 	AttributeMap attributes{};
-	std::vector<Vec3> positions{};
-	std::vector<Vec3> normals{};
-	std::vector<Vec4> tangents{};
-	std::vector<std::vector<Vec2>> tex_coords{};
-	std::vector<std::vector<Vec3>> colors{};
+	std::vector<Vec<3>> positions{};
+	std::vector<Vec<3>> normals{};
+	std::vector<Vec<4>> tangents{};
+	std::vector<std::vector<Vec<2>>> tex_coords{};
+	std::vector<std::vector<Vec<3>>> colors{};
 };
 
 ///
@@ -473,7 +483,7 @@ struct Sampler {
 ///
 struct Skin {
 	std::string name{unnamed_v};
-	std::optional<Index<Accessor>> inverseBindMatrices{};
+	std::optional<Index<Accessor>> inverse_bind_matrices{};
 	std::optional<Index<Node>> skeleton{};
 	std::vector<Index<Node>> joints{};
 	dj::Json extensions{};

@@ -66,10 +66,10 @@ struct AccessorLayout {
 };
 
 constexpr auto identity_matrix_v = Mat4x4{{
-	Vec4{{1.0f, 0.0f, 0.0f, 0.0f}},
-	Vec4{{0.0f, 1.0f, 0.0f, 0.0f}},
-	Vec4{{0.0f, 0.0f, 1.0f, 0.0f}},
-	Vec4{{0.0f, 0.0f, 0.0f, 1.0f}},
+	Vec<4>{{1.0f, 0.0f, 0.0f, 0.0f}},
+	Vec<4>{{0.0f, 1.0f, 0.0f, 0.0f}},
+	Vec<4>{{0.0f, 0.0f, 1.0f, 0.0f}},
+	Vec<4>{{0.0f, 0.0f, 0.0f, 1.0f}},
 }};
 
 constexpr std::size_t get_base64_start(std::string_view str) {
@@ -219,14 +219,28 @@ Transform get_transform(dj::Json const& node) {
 	return ret;
 }
 
-std::vector<Vec3> to_rgbs(gltf2cpp::Accessor const& accessor) {
+std::vector<Vec<3>> to_rgbs(gltf2cpp::Accessor const& accessor) {
 	EXPECT(accessor.component_type == gltf2cpp::ComponentType::eFloat); // facade restriction
 	if (accessor.type == gltf2cpp::Accessor::Type::eVec3) { return accessor.to_vec<3>(); }
 	auto const vec4 = accessor.to_vec<4>(); // spec
-	auto ret = std::vector<Vec3>{};
+	auto ret = std::vector<Vec<3>>{};
 	ret.reserve(vec4.size());
 	for (auto& v : vec4) { ret.push_back({v[0], v[1], v[2]}); }
 	return ret;
+}
+
+std::vector<UVec<4>> to_joints(gltf2cpp::Accessor const& accessor) {
+	auto ret = std::vector<UVec<4>>{};
+	auto in = accessor.to_u32();
+	assert(in.size() % 4 == 0);
+	ret.resize(in.size() / 4);
+	std::memcpy(ret.data(), in.data(), std::span{in}.size_bytes());
+	return ret;
+}
+
+std::vector<Vec<4>> to_weights(gltf2cpp::Accessor const& accessor) {
+	if (accessor.component_type == gltf2cpp::ComponentType::eFloat) { return accessor.to_vec<4>(); }
+	return {};
 }
 
 struct GltfParser {
@@ -325,6 +339,16 @@ struct GltfParser {
 		s.extras = json["extras"];
 	}
 
+	template <typename F>
+	void populate_indexed(AttributeMap const& attributes, std::string_view prefix, F func) const {
+		for (std::size_t index = 0;; ++index) {
+			auto const key = std::string{prefix} + std::to_string(index);
+			auto it_col = attributes.find(key);
+			if (it_col == attributes.end()) { break; }
+			func(storage.accessors[it_col->second]);
+		}
+	}
+
 	template <typename T>
 	void populate(T& out) const {
 		auto const& attributes = out.attributes;
@@ -343,20 +367,20 @@ struct GltfParser {
 				for (auto const& v : vec) { out.tangents.push_back({v[0], v[1], v[2], 0.0f}); }
 			}
 		}
-		auto do_populate = [&](std::string_view prefix, auto& out_vec, auto to_vec) {
-			for (std::size_t index = 0;; ++index) {
-				auto const key = std::string{prefix} + std::to_string(index);
-				auto it_col = attributes.find(key);
-				if (it_col == attributes.end()) { break; }
-				auto const& accessor = storage.accessors[it_col->second];
-				if (accessor.component_type == ComponentType::eFloat) {
-					out_vec.push_back(to_vec(accessor));
-					EXPECT(out_vec.back().size() == out.positions.size());
-				}
+		auto populate_rgb = [&](Accessor const& accessor) {
+			if (accessor.component_type == ComponentType::eFloat) {
+				out.colors.push_back(to_rgbs(accessor));
+				EXPECT(out.colors.back().size() == out.positions.size());
 			}
 		};
-		do_populate("COLOR_", out.colors, [](auto const& a) { return to_rgbs(a); });
-		do_populate("TEXCOORD_", out.tex_coords, [](auto const& a) { return a.template to_vec<2>(); });
+		populate_indexed(attributes, "COLOR_", populate_rgb);
+		auto populate_uv = [&](Accessor const& accessor) {
+			if (accessor.component_type == ComponentType::eFloat) {
+				out.tex_coords.push_back(accessor.template to_vec<2>());
+				EXPECT(out.tex_coords.back().size() == out.positions.size());
+			}
+		};
+		populate_indexed(attributes, "TEXCOORD_", populate_uv);
 	}
 
 	Mesh::Primitive primitive(dj::Json const& json) const {
@@ -377,6 +401,11 @@ struct GltfParser {
 			morph_target.attributes = make_attributes(target);
 			populate(morph_target);
 		}
+		auto populate_joint = [&](Accessor const& accessor) { ret.geometry.joints.push_back(to_joints(accessor)); };
+		populate_indexed(ret.geometry.attributes, "JOINTS_", populate_joint);
+		auto populate_weight = [&](Accessor const& accessor) { ret.geometry.weights.push_back(to_weights(accessor)); };
+		populate_indexed(ret.geometry.attributes, "WEIGHTS_", populate_weight);
+		EXPECT(ret.geometry.joints.size() == ret.geometry.weights.size());
 		return ret;
 	}
 
@@ -542,7 +571,7 @@ struct GltfParser {
 		s.extras = json["extras"];
 		EXPECT(json.contains("joints"));
 		for (auto const& joint : json["joints"].array_view()) { s.joints.push_back(joint.as<std::size_t>()); }
-		if (auto const& ibm = json["inverseBindMatrices"]) { s.inverseBindMatrices = ibm.as<std::size_t>(); }
+		if (auto const& ibm = json["inverseBindMatrices"]) { s.inverse_bind_matrices = ibm.as<std::size_t>(); }
 		if (auto const& skeleton = json["skeleton"]) { s.skeleton = skeleton.as<std::size_t>(); }
 	}
 
@@ -624,7 +653,6 @@ auto Accessor::to_type(std::string_view const key) -> Type {
 }
 
 std::vector<std::uint32_t> Accessor::to_u32() const {
-	EXPECT(type == gltf2cpp::Accessor::Type::eScalar);
 	auto ret = std::vector<std::uint32_t>{};
 	if (auto const* d = std::get_if<UnsignedInt>(&data)) {
 		ret.resize(d->size());
