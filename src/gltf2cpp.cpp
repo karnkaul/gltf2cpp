@@ -591,6 +591,7 @@ struct GltfParser {
 		for (auto const& m : scene["meshes"].array_view()) { mesh(m); }
 		for (auto const& m : scene["materials"].array_view()) { material(m); }
 		for (auto const& a : scene["animations"].array_view()) { animation(a); }
+		for (auto const& a : scene["skins"].array_view()) { skin(a); }
 
 		// Texture will use ColourSpace::sRGB by default; change non-colour textures to be linear
 		auto set_linear = [this](std::size_t index) { storage.textures[index].linear = true; };
@@ -668,6 +669,17 @@ std::vector<std::uint32_t> Accessor::to_u32() const {
 	return ret;
 }
 
+std::vector<Mat4x4> Accessor::to_mat4() const {
+	EXPECT(type == Type::eMat4);
+	EXPECT(std::holds_alternative<Float>(data));
+	auto ret = std::vector<Mat4x4>{};
+	auto const& d = std::get<Float>(data);
+	EXPECT(d.size() % 16 == 0);
+	ret.resize(d.size() / 16);
+	std::memcpy(ret.data(), d.data(), d.span().size_bytes());
+	return ret;
+}
+
 Metadata Parser::metadata() const {
 	auto ret = Metadata{};
 	ret.images = json["images"].array_view().size();
@@ -702,6 +714,7 @@ Root Parser::parse(GetBytes const& get_bytes) const {
 			}
 		}
 		if (auto const& camera = jnode["camera"]) { node.camera = camera.as<std::size_t>(); }
+		if (auto const& skin = jnode["skin"]) { node.skin = skin.as<std::size_t>(); }
 		ret.nodes.push_back(std::move(node));
 	}
 

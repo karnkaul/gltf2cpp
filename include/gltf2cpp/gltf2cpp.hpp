@@ -208,6 +208,14 @@ struct Accessor {
 	///
 	template <std::size_t Dim>
 	std::vector<Vec<Dim>> to_vec() const;
+
+	///
+	/// \brief Obtain data as a vector of Mat4x4
+	/// \returns Data as std::vefctor of Mat4x4
+	///
+	/// type must be Type::eMat4, and component_type must be ComponentType::eFloat.
+	///
+	std::vector<Mat4x4> to_mat4() const;
 };
 
 struct Node;
