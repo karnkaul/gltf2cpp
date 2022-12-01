@@ -200,6 +200,7 @@ struct Accessor {
 	Data data{};
 	ComponentType component_type{};
 	Type type{};
+	std::size_t count{};
 	bool normalized{};
 	dj::Json extensions{};
 	dj::Json extras{};
@@ -218,14 +219,6 @@ struct Accessor {
 	/// \returns Corresponding Type for key
 	///
 	static Type to_type(std::string_view key);
-
-	///
-	/// \brief Obtain a view into the bytes referred to by this accessor.
-	/// \param buffers All the buffers
-	/// \param buffer_views All the buffer views
-	/// \returns View into bytes referred to by this accessor
-	///
-	std::span<std::byte const> bytes(std::span<Buffer const> buffers, std::span<BufferView const> buffer_views) const;
 
 	///
 	/// \brief Obtain data as a vector of u32.

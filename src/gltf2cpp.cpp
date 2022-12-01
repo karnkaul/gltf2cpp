@@ -157,8 +157,11 @@ auto make_component_data(std::span<std::byte const> span, AccessorLayout layout)
 	auto arr = DynArray<T>{layout.container_size()};
 	if (!span.empty()) {
 		auto const size_bytes = layout.container_size() * sizeof(T);
+		auto const element_width = sizeof(T) * layout.component_coeff;
 		EXPECT(span.size() * layout.stride.value_or(1) >= size_bytes);
-		if (layout.stride) {
+		auto const stride = layout.stride.value_or(element_width);
+		EXPECT(stride >= element_width);
+		if (element_width < stride) {
 			for (std::size_t i = 0; i < layout.count; ++i) {
 				auto& t = arr.span()[i * layout.component_coeff];
 				std::memcpy(&t, span.data(), sizeof(T) * layout.component_coeff);
@@ -264,6 +267,7 @@ struct GltfParser {
 		a.type = Accessor::to_type(json["type"].as_string());
 		a.name = json["name"].as_string(a.name);
 		a.normalized = json["normalized"].as_bool(dj::Boolean{false}).value;
+		a.count = json["count"].as<std::size_t>();
 		auto bytes = std::span<std::byte const>{};
 		auto stride = std::optional<std::size_t>{};
 		a.byte_offset = json["byteOffset"].as<std::size_t>(0);
@@ -279,7 +283,7 @@ struct GltfParser {
 		auto const layout = AccessorLayout{
 			.min = json["min"],
 			.max = json["max"],
-			.count = json["count"].as<std::size_t>(),
+			.count = a.count,
 			.component_coeff = Accessor::type_coeff(a.type),
 			.stride = stride,
 		};
@@ -638,12 +642,6 @@ std::span<std::byte const> BufferView::to_span(std::span<Buffer const> buffers) 
 	if (offset + b.bytes.size() < length) { throw Error{"Invalid buffer view"}; }
 	if (length == 0) { return {}; }
 	return {&b.bytes[offset], length};
-}
-
-std::span<std::byte const> Accessor::bytes(std::span<Buffer const> buffers, std::span<BufferView const> buffer_views) const {
-	if (!buffer_view) { return {}; }
-	if (*buffer_view >= buffer_views.size()) { throw Error{"Invalid accessor"}; }
-	return buffer_views[*buffer_view].to_span(buffers).subspan(byte_offset);
 }
 
 auto Accessor::to_type(std::string_view const key) -> Type {
