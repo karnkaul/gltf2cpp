@@ -10,8 +10,6 @@ namespace gltf2cpp {
 namespace fs = std::filesystem;
 
 namespace {
-using Buffer = ByteArray;
-
 struct Reader {
 	fs::path prefix{};
 
@@ -25,11 +23,6 @@ struct Reader {
 	}
 };
 
-enum class BufferTarget : std::uint32_t {
-	eArrayBuffer = 34962,
-	eElementArrayBuffer = 34693,
-};
-
 template <typename T>
 struct Limit {
 	T data[16];
@@ -41,20 +34,6 @@ struct Limit {
 	}
 
 	constexpr std::span<T const> span() const { return {data, size}; }
-};
-
-struct BufferView {
-	Index<Buffer> buffer{};
-	std::size_t offset{};
-	std::size_t length{};
-	BufferTarget target{};
-	std::optional<std::size_t> stride{};
-
-	std::span<std::byte const> to_span(Buffer const& buffer) const {
-		if (offset + buffer.size() < length) { throw Error{"todo: gltf error"}; }
-		if (length == 0) { return {}; }
-		return {&buffer[offset], length};
-	}
 };
 
 struct AccessorLayout {
@@ -255,23 +234,21 @@ std::vector<Vec<4>> to_weights(gltf2cpp::Accessor const& accessor) {
 
 struct GltfParser {
 	GetBytes const& get_bytes;
-	Root& storage;
-	std::vector<Buffer> buffers{};
-	std::vector<BufferView> buffer_views{};
+	Root& root;
 
 	void buffer(dj::Json const& json) {
-		auto& b = buffers.emplace_back();
+		auto& b = root.buffers.emplace_back();
 		auto const uri = json["uri"].as_string();
 		EXPECT(!uri.empty());
 		if (auto i = get_base64_start(uri); i != std::string_view::npos) {
-			b = base64_decode(uri.substr(i));
+			b.bytes = base64_decode(uri.substr(i));
 		} else if (get_bytes) {
-			b = get_bytes(uri);
+			b.bytes = get_bytes(uri);
 		}
 	}
 
 	void buffer_view(dj::Json const& json) {
-		auto& bv = buffer_views.emplace_back();
+		auto& bv = root.buffer_views.emplace_back();
 		EXPECT(json.contains("buffer") && json.contains("byteLength"));
 		bv.buffer = json["buffer"].as<std::size_t>();
 		bv.length = json["byteLength"].as<std::size_t>();
@@ -281,7 +258,7 @@ struct GltfParser {
 	}
 
 	void accessor(dj::Json const& json) {
-		auto& a = storage.accessors.emplace_back();
+		auto& a = root.accessors.emplace_back();
 		EXPECT(json.contains("componentType") && json.contains("count") && json.contains("type"));
 		a.component_type = static_cast<ComponentType>(json["componentType"].as<int>());
 		a.type = Accessor::to_type(json["type"].as_string());
@@ -289,9 +266,11 @@ struct GltfParser {
 		a.normalized = json["normalized"].as_bool(dj::Boolean{false}).value;
 		auto bytes = std::span<std::byte const>{};
 		auto stride = std::optional<std::size_t>{};
+		a.byte_offset = json["byteOffset"].as<std::size_t>(0);
 		if (auto const& bv = json["bufferView"]) {
-			auto const& view = buffer_views[bv.as<std::size_t>()];
-			bytes = view.to_span(buffers[view.buffer]).subspan(json["byteOffset"].as<std::size_t>(0));
+			a.buffer_view = bv.as<std::size_t>();
+			auto const& view = root.buffer_views[*a.buffer_view];
+			bytes = view.to_span(root.buffers).subspan(a.byte_offset);
 			stride = view.stride;
 		}
 		a.extensions = json["extensions"];
@@ -328,7 +307,7 @@ struct GltfParser {
 	}
 
 	void camera(dj::Json const& json) {
-		auto& c = storage.cameras.emplace_back();
+		auto& c = root.cameras.emplace_back();
 		EXPECT(json.contains("type"));
 		c.name = json["name"].as_string(c.name);
 		c.extensions = json["extensions"];
@@ -343,7 +322,7 @@ struct GltfParser {
 	}
 
 	void sampler(dj::Json const& json) {
-		auto& s = storage.samplers.emplace_back();
+		auto& s = root.samplers.emplace_back();
 		s.name = json["name"].as<std::string>(s.name);
 		if (auto const& min = json["minFilter"]) { s.min_filter = static_cast<Filter>(min.as<int>()); }
 		if (auto const& mag = json["magFilter"]) { s.mag_filter = static_cast<Filter>(mag.as<int>()); }
@@ -359,7 +338,7 @@ struct GltfParser {
 			auto const key = std::string{prefix} + std::to_string(index);
 			auto it_col = attributes.find(key);
 			if (it_col == attributes.end()) { break; }
-			func(storage.accessors[it_col->second]);
+			func(root.accessors[it_col->second]);
 		}
 	}
 
@@ -368,11 +347,11 @@ struct GltfParser {
 		auto const& attributes = out.attributes;
 		auto const it_pos = attributes.find("POSITION");
 		if (it_pos == attributes.end()) { return; }
-		out.positions = storage.accessors[it_pos->second].template to_vec<3>();
-		if (auto it_norm = attributes.find("NORMAL"); it_norm != attributes.end()) { out.normals = storage.accessors[it_norm->second].template to_vec<3>(); }
+		out.positions = root.accessors[it_pos->second].template to_vec<3>();
+		if (auto it_norm = attributes.find("NORMAL"); it_norm != attributes.end()) { out.normals = root.accessors[it_norm->second].template to_vec<3>(); }
 		if (auto it_tan = attributes.find("TANGENT"); it_tan != attributes.end()) {
 			// some sample files use vec3 tangents
-			auto const& accessor = storage.accessors[it_tan->second];
+			auto const& accessor = root.accessors[it_tan->second];
 			if (accessor.type == Accessor::Type::eVec4) {
 				out.tangents = accessor.template to_vec<4>();
 			} else if (accessor.type == Accessor::Type::eVec3) {
@@ -406,7 +385,7 @@ struct GltfParser {
 		ret.geometry.attributes = make_attributes(json["attributes"]);
 		if (auto const& indices = json["indices"]) {
 			ret.indices = indices.as<std::size_t>();
-			ret.geometry.indices = storage.accessors[*ret.indices].to_u32();
+			ret.geometry.indices = root.accessors[*ret.indices].to_u32();
 		}
 		if (auto const& material = json["material"]) { ret.material = material.as<std::size_t>(); }
 		populate(ret.geometry);
@@ -426,7 +405,7 @@ struct GltfParser {
 	void mesh(dj::Json const& json) {
 		auto const& primitives = json["primitives"].array_view();
 		EXPECT(!primitives.empty());
-		auto& m = storage.meshes.emplace_back();
+		auto& m = root.meshes.emplace_back();
 		m.name = json["name"].as_string(m.name);
 		m.extensions = json["extensions"];
 		m.extras = json["extras"];
@@ -437,7 +416,7 @@ struct GltfParser {
 	}
 
 	void image(dj::Json const& json) {
-		auto& i = storage.images.emplace_back();
+		auto& i = root.images.emplace_back();
 		auto name = std::string{json["name"].as_string(unnamed_v)};
 		i.extensions = json["extensions"];
 		i.extras = json["extras"];
@@ -449,13 +428,13 @@ struct GltfParser {
 				i = Image{get_bytes(uri), std::move(name)};
 			}
 		} else {
-			auto const& bv = buffer_views[json["bufferView"].as<std::size_t>()];
-			i = Image{to_byte_array(bv.to_span(buffers[bv.buffer])), std::move(name)};
+			auto const& bv = root.buffer_views[json["bufferView"].as<std::size_t>()];
+			i = Image{to_byte_array(bv.to_span(root.buffers)), std::move(name)};
 		}
 	}
 
 	void texture(dj::Json const& json) {
-		auto& t = storage.textures.emplace_back();
+		auto& t = root.textures.emplace_back();
 		t.name = json["name"].as<std::string>(t.name);
 		if (auto const& sampler = json["sampler"]) { t.sampler = sampler.as<std::size_t>(); }
 		EXPECT(json.contains("source"));
@@ -505,7 +484,7 @@ struct GltfParser {
 	}
 
 	void material(dj::Json const& json) {
-		auto& m = storage.materials.emplace_back();
+		auto& m = root.materials.emplace_back();
 		m.name = std::string{json["name"].as_string(m.name)};
 		m.pbr = pbr_metallic_roughness(json["pbrMetallicRoughness"]);
 		m.emissive_factor = get_vec<3>(json["emissiveFactor"]);
@@ -570,7 +549,7 @@ struct GltfParser {
 	}
 
 	void animation(dj::Json const& json) {
-		auto& a = storage.animations.emplace_back();
+		auto& a = root.animations.emplace_back();
 		a.name = json["name"].as_string(a.name);
 		a.extensions = json["extensions"];
 		a.extras = json["extras"];
@@ -579,7 +558,7 @@ struct GltfParser {
 	}
 
 	void skin(dj::Json const& json) {
-		auto& s = storage.skins.emplace_back();
+		auto& s = root.skins.emplace_back();
 		s.name = json["name"].as_string(s.name);
 		s.extensions = json["extensions"];
 		s.extras = json["extras"];
@@ -590,9 +569,7 @@ struct GltfParser {
 	}
 
 	void parse(dj::Json const& scene) {
-		buffers.clear();
-		buffer_views.clear();
-		storage = {};
+		root = {};
 
 		for (auto const& b : scene["buffers"].array_view()) { buffer(b); }
 		for (auto const& bv : scene["bufferViews"].array_view()) { buffer_view(bv); }
@@ -608,13 +585,13 @@ struct GltfParser {
 		for (auto const& a : scene["skins"].array_view()) { skin(a); }
 
 		// Texture will use ColourSpace::sRGB by default; change non-colour textures to be linear
-		auto set_linear = [this](std::size_t index) { storage.textures[index].linear = true; };
+		auto set_linear = [this](std::size_t index) { root.textures[index].linear = true; };
 
 		// Determine whether a texture points to colour data by referring to the material(s) it is used in
 		// In our case all material textures except pbr.base_colour_texture and emissive_texture are linear
 		// The GLTF spec mandates image formats for corresponding material textures:
 		// https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#reference-material
-		for (auto const& m : storage.materials) {
+		for (auto const& m : root.materials) {
 			if (m.pbr.metallic_roughness_texture) { set_linear(m.pbr.metallic_roughness_texture->texture); }
 			if (m.occlusion_texture) { set_linear(m.occlusion_texture->info.texture); }
 			if (m.normal_texture) { set_linear(m.normal_texture->info.texture); }
@@ -653,6 +630,20 @@ std::string detail::print_error(char const* msg) {
 void detail::expect(bool pred, char const* expr) noexcept(false) {
 	if (pred) { return; }
 	throw Error{print_error(expr)};
+}
+
+std::span<std::byte const> BufferView::to_span(std::span<Buffer const> buffers) const {
+	if (buffer >= buffers.size()) { throw Error{"Invalid buffer view"}; }
+	auto const& b = buffers[buffer];
+	if (offset + b.bytes.size() < length) { throw Error{"Invalid buffer view"}; }
+	if (length == 0) { return {}; }
+	return {&b.bytes[offset], length};
+}
+
+std::span<std::byte const> Accessor::bytes(std::span<Buffer const> buffers, std::span<BufferView const> buffer_views) const {
+	if (!buffer_view) { return {}; }
+	if (*buffer_view >= buffer_views.size()) { throw Error{"Invalid accessor"}; }
+	return buffer_views[*buffer_view].to_span(buffers).subspan(byte_offset);
 }
 
 auto Accessor::to_type(std::string_view const key) -> Type {

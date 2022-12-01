@@ -49,23 +49,12 @@ enum class AlphaMode : std::uint32_t {
 	eMask,
 };
 
-enum class PrimitiveMode : std::uint32_t {
-	ePoints = 0,
-	eLines = 1,
-	eLineLoop = 2,
-	eLineStrip = 3,
-	eTriangles = 4,
-	eTriangleStrip = 5,
-	eTriangleFan = 6,
-};
-
 ///
-/// \brief GLTF Animation Interpolation.
+/// \brief GLTF Buffer Target.
 ///
-enum class Interpolation : std::uint32_t {
-	eLinear,
-	eStep,
-	eCubicSpline,
+enum class BufferTarget : std::uint32_t {
+	eArrayBuffer = 34962,
+	eElementArrayBuffer = 34693,
 };
 
 ///
@@ -93,12 +82,48 @@ enum class Filter : std::uint32_t {
 };
 
 ///
+/// \brief GLTF Animation Interpolation.
+///
+enum class Interpolation : std::uint32_t {
+	eLinear,
+	eStep,
+	eCubicSpline,
+};
+
+///
+/// \brief GLTF Primitive Mode.
+///
+enum class PrimitiveMode : std::uint32_t {
+	ePoints = 0,
+	eLines = 1,
+	eLineLoop = 2,
+	eLineStrip = 3,
+	eTriangles = 4,
+	eTriangleStrip = 5,
+	eTriangleFan = 6,
+};
+
+///
 /// \brief GLTF Sampler Wrap.
 ///
 enum class Wrap : std::uint32_t {
 	eClampEdge = 33071,
 	eMirrorRepeat = 33648,
 	eRepeat = 10497,
+};
+
+struct Buffer {
+	ByteArray bytes{};
+};
+
+struct BufferView {
+	Index<Buffer> buffer{};
+	std::size_t offset{};
+	std::size_t length{};
+	BufferTarget target{};
+	std::optional<std::size_t> stride{};
+
+	std::span<std::byte const> to_span(std::span<Buffer const> buffers) const;
 };
 
 ///
@@ -170,6 +195,8 @@ struct Accessor {
 	enum class Type { eScalar, eVec2, eVec3, eVec4, eMat2, eMat3, eMat4, eCOUNT_ };
 
 	std::string name{unnamed_v};
+	std::optional<Index<BufferView>> buffer_view{};
+	std::size_t byte_offset{};
 	Data data{};
 	ComponentType component_type{};
 	Type type{};
@@ -191,6 +218,14 @@ struct Accessor {
 	/// \returns Corresponding Type for key
 	///
 	static Type to_type(std::string_view key);
+
+	///
+	/// \brief Obtain a view into the bytes referred to by this accessor.
+	/// \param buffers All the buffers
+	/// \param buffer_views All the buffer views
+	/// \returns View into bytes referred to by this accessor
+	///
+	std::span<std::byte const> bytes(std::span<Buffer const> buffers, std::span<BufferView const> buffer_views) const;
 
 	///
 	/// \brief Obtain data as a vector of u32.
@@ -536,10 +571,10 @@ struct Metadata {
 /// \brief GLTF root.
 ///
 /// Contains all the data parsed from a GLTF file (and resources it points to).
-/// Buffers and BufferViews are not exposed, the raw bytes in those data are refined
-/// into typed vectors in each Accessor.
 ///
 struct Root {
+	std::vector<Buffer> buffers{};
+	std::vector<BufferView> buffer_views{};
 	std::vector<Accessor> accessors{};
 	std::vector<Animation> animations{};
 	std::vector<Camera> cameras{};
