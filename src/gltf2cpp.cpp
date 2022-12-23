@@ -18,6 +18,7 @@ struct Reader {
 		if (!file) { return {}; }
 		auto const size = file.tellg();
 		auto ret = ByteArray{static_cast<std::size_t>(size)};
+		file.seekg({}, std::ios::beg);
 		file.read(reinterpret_cast<char*>(ret.data()), size);
 		return ret;
 	}
