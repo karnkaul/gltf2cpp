@@ -12,15 +12,17 @@ namespace fs = std::filesystem;
 namespace {
 struct Reader {
 	fs::path prefix{};
+	std::unordered_map<std::string, ByteArray> loaded{};
 
-	ByteArray operator()(std::string_view uri) const {
+	std::span<std::byte const> operator()(std::string const& uri) {
+		if (auto it = loaded.find(uri); it != loaded.end()) { return it->second.span(); }
 		auto file = std::ifstream{prefix / uri, std::ios::binary | std::ios::ate};
 		if (!file) { return {}; }
 		auto const size = file.tellg();
-		auto ret = ByteArray{static_cast<std::size_t>(size)};
+		auto [it, _] = loaded.insert_or_assign(uri, ByteArray{static_cast<std::size_t>(size)});
 		file.seekg({}, std::ios::beg);
-		file.read(reinterpret_cast<char*>(ret.data()), size);
-		return ret;
+		file.read(reinterpret_cast<char*>(it->second.data()), size);
+		return it->second.span();
 	}
 };
 
@@ -247,7 +249,7 @@ struct GltfParser {
 		if (auto i = get_base64_start(uri); i != std::string_view::npos) {
 			b.bytes = base64_decode(uri.substr(i));
 		} else if (get_bytes) {
-			b.bytes = get_bytes(uri);
+			b.bytes = ByteArray{get_bytes(uri)};
 		}
 	}
 
@@ -430,7 +432,7 @@ struct GltfParser {
 			if (auto const it = get_base64_start(uri); it != std::string_view::npos) {
 				i = Image{base64_decode(uri.substr(it)), std::move(name)};
 			} else if (get_bytes) {
-				i = Image{get_bytes(uri), std::move(name)};
+				i = Image{ByteArray{get_bytes(uri)}, std::move(name)};
 			}
 		} else {
 			auto const& bv = root.buffer_views[json["bufferView"].as<std::size_t>()];
@@ -746,6 +748,8 @@ Root parse(char const* json_path) {
 	if (!fs::is_regular_file(json_path)) { return {}; }
 	auto json = dj::Json::from_file(json_path);
 	if (!json) { return {}; }
-	return Parser{json}.parse(Reader{fs::path{json_path}.parent_path()});
+	auto reader = Reader{fs::path{json_path}.parent_path()};
+	auto get_bytes = [&reader](std::string_view uri) { return reader(std::string{uri}); };
+	return Parser{json}.parse(get_bytes);
 }
 } // namespace gltf2cpp

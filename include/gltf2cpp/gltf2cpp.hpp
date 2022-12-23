@@ -38,7 +38,7 @@ using Mat4x4 = std::array<Vec<4>, 4>;
 ///
 /// \brief Alias for callable that returns bytes given a URI.
 ///
-using GetBytes = std::function<ByteArray(std::string_view)>;
+using GetBytes = std::function<std::span<std::byte const>(std::string_view)>;
 
 ///
 /// \brief GLTF Material Alpha Mode.
