@@ -432,7 +432,7 @@ struct GltfParser {
 			if (auto const it = get_base64_start(uri); it != std::string_view::npos) {
 				i = Image{base64_decode(uri.substr(it)), std::move(name)};
 			} else if (get_bytes) {
-				i = Image{ByteArray{get_bytes(uri)}, std::move(name)};
+				i = Image{ByteArray{get_bytes(uri)}, std::move(name), std::string{uri}};
 			}
 		} else {
 			auto const& bv = root.buffer_views[json["bufferView"].as<std::size_t>()];

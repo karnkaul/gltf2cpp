@@ -344,6 +344,7 @@ struct Camera {
 struct Image {
 	ByteArray bytes{};
 	std::string name{unnamed_v};
+	std::string source_filename{};
 	dj::Json extensions{};
 	dj::Json extras{};
 };
