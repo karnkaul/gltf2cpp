@@ -493,7 +493,9 @@ struct Skin;
 struct Node {
 	std::string name{unnamed_v};
 	Transform transform{};
+	Index<Node> self{};
 	std::vector<Index<Node>> children{};
+	std::optional<Index<Node>> parent{};
 	std::optional<Index<Camera>> camera{};
 	std::optional<Index<Mesh>> mesh{};
 	std::optional<Index<Skin>> skin{};

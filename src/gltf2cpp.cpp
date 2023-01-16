@@ -703,10 +703,15 @@ Root Parser::parse(GetBytes const& get_bytes) const {
 
 	auto const& nodes = json["nodes"].array_view();
 	ret.nodes.reserve(nodes.size());
+	auto parent_map = std::unordered_map<Index<Node>, Index<Node>>{};
 	for (auto const& jnode : nodes) {
 		auto node = Node{.name = jnode["name"].as<std::string>()};
+		node.self = ret.nodes.size();
 		node.transform = get_transform(jnode);
-		for (auto const& child : jnode["children"].array_view()) { node.children.push_back(child.as<std::size_t>()); }
+		for (auto const& child : jnode["children"].array_view()) {
+			node.children.push_back(child.as<std::size_t>());
+			parent_map.insert_or_assign(node.children.back(), node.self);
+		}
 		for (auto const& weight : jnode["weights"].array_view()) { node.weights.push_back(weight.as<float>()); }
 		if (auto const& mesh = jnode["mesh"]) {
 			node.mesh = mesh.as<std::size_t>();
@@ -722,6 +727,10 @@ Root Parser::parse(GetBytes const& get_bytes) const {
 		if (auto const& camera = jnode["camera"]) { node.camera = camera.as<std::size_t>(); }
 		if (auto const& skin = jnode["skin"]) { node.skin = skin.as<std::size_t>(); }
 		ret.nodes.push_back(std::move(node));
+	}
+	// assign parents
+	for (auto& node : ret.nodes) {
+		if (auto it = parent_map.find(node.self); it != parent_map.end()) { node.parent = it->second; }
 	}
 
 	auto const& scenes = json["scenes"].array_view();
