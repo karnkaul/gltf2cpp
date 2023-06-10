@@ -1,5 +1,6 @@
 #include <gltf2cpp/error.hpp>
 #include <gltf2cpp/gltf2cpp.hpp>
+#include <algorithm>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -419,7 +420,7 @@ struct GltfParser {
 		for (auto const& j : primitives) { m.primitives.push_back(primitive(j)); }
 		for (auto const& j : json["weights"].array_view()) { m.weights.push_back(j.as<float>()); }
 		[[maybe_unused]] auto const target_count = m.primitives[0].targets.size();
-		EXPECT(std::all_of(m.primitives.begin(), m.primitives.end(), [target_count](auto const& p) { return p.targets.size() == target_count; }));
+		EXPECT(std::ranges::all_of(m.primitives, [target_count](auto const& p) { return p.targets.size() == target_count; }));
 	}
 
 	void image(dj::Json const& json) {

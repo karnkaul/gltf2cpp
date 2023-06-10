@@ -1,5 +1,6 @@
 #pragma once
 #include <compare>
+#include <cstdint>
 #include <string>
 
 namespace gltf2cpp {
