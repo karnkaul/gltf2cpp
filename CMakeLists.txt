@@ -23,7 +23,7 @@ if(NOT TARGET djson)
   FetchContent_Declare(
     djson
     GIT_REPOSITORY https://github.com/karnkaul/djson
-    GIT_TAG 129c0b1de0d834e3e9bfb7f0a2403e26a50e66d3
+    GIT_TAG dfe42274a154a7bd3c8f040ae8abac06e43f5777
   )
   FetchContent_MakeAvailable(djson)
 endif()
