@@ -1,5 +1,6 @@
 #include <gltf2cpp/error.hpp>
 #include <gltf2cpp/gltf2cpp.hpp>
+#include <algorithm>
 #include <cstring>
 #include <filesystem>
 #include <fstream>
@@ -10,24 +11,20 @@ namespace gltf2cpp {
 namespace fs = std::filesystem;
 
 namespace {
-using Buffer = ByteArray;
-
 struct Reader {
 	fs::path prefix{};
+	std::unordered_map<std::string, ByteArray> loaded{};
 
-	ByteArray operator()(std::string_view uri) const {
+	std::span<std::byte const> operator()(std::string const& uri) {
+		if (auto it = loaded.find(uri); it != loaded.end()) { return it->second.span(); }
 		auto file = std::ifstream{prefix / uri, std::ios::binary | std::ios::ate};
 		if (!file) { return {}; }
 		auto const size = file.tellg();
-		auto ret = ByteArray{static_cast<std::size_t>(size)};
-		file.read(reinterpret_cast<char*>(ret.data()), size);
-		return ret;
+		auto [it, _] = loaded.insert_or_assign(uri, ByteArray{static_cast<std::size_t>(size)});
+		file.seekg({}, std::ios::beg);
+		file.read(reinterpret_cast<char*>(it->second.data()), size);
+		return it->second.span();
 	}
-};
-
-enum class BufferTarget : std::uint32_t {
-	eArrayBuffer = 34962,
-	eElementArrayBuffer = 34693,
 };
 
 template <typename T>
@@ -43,33 +40,21 @@ struct Limit {
 	constexpr std::span<T const> span() const { return {data, size}; }
 };
 
-struct BufferView {
-	Index<Buffer> buffer{};
-	std::size_t offset{};
-	std::size_t length{};
-	BufferTarget target{};
-
-	std::span<std::byte const> to_span(Buffer const& buffer) const {
-		if (offset + buffer.size() < length) { throw Error{"todo: gltf error"}; }
-		if (length == 0) { return {}; }
-		return {&buffer[offset], length};
-	}
-};
-
 struct AccessorLayout {
 	dj::Json const& min{};
 	dj::Json const& max{};
 	std::size_t count{};
 	std::size_t component_coeff{};
+	std::optional<std::size_t> stride{};
 
 	constexpr std::size_t container_size() const { return count * component_coeff; }
 };
 
 constexpr auto identity_matrix_v = Mat4x4{{
-	Vec4{{1.0f, 0.0f, 0.0f, 0.0f}},
-	Vec4{{0.0f, 1.0f, 0.0f, 0.0f}},
-	Vec4{{0.0f, 0.0f, 1.0f, 0.0f}},
-	Vec4{{0.0f, 0.0f, 0.0f, 1.0f}},
+	Vec<4>{{1.0f, 0.0f, 0.0f, 0.0f}},
+	Vec<4>{{0.0f, 1.0f, 0.0f, 0.0f}},
+	Vec<4>{{0.0f, 0.0f, 1.0f, 0.0f}},
+	Vec<4>{{0.0f, 0.0f, 0.0f, 1.0f}},
 }};
 
 constexpr std::size_t get_base64_start(std::string_view str) {
@@ -171,16 +156,27 @@ constexpr void apply_limit(std::span<T> out, dj::Json::ArrayProxy const& source,
 }
 
 template <ComponentType C>
-auto make_component_data(std::span<std::byte const> span, AccessorLayout ads) {
+auto make_component_data(std::span<std::byte const> span, AccessorLayout layout) {
 	using T = FromComponentType<C>;
-	auto arr = DynArray<T>{ads.container_size()};
+	auto arr = DynArray<T>{layout.container_size()};
 	if (!span.empty()) {
-		auto const size_bytes = ads.container_size() * sizeof(T);
-		EXPECT(span.size() >= size_bytes);
-		std::memcpy(arr.data(), span.data(), size_bytes);
+		auto const size_bytes = layout.container_size() * sizeof(T);
+		auto const element_width = sizeof(T) * layout.component_coeff;
+		EXPECT(span.size() * layout.stride.value_or(1) >= size_bytes);
+		auto const stride = layout.stride.value_or(element_width);
+		EXPECT(stride >= element_width);
+		if (element_width < stride) {
+			for (std::size_t i = 0; i < layout.count; ++i) {
+				auto& t = arr.span()[i * layout.component_coeff];
+				std::memcpy(&t, span.data(), sizeof(T) * layout.component_coeff);
+				span = span.subspan(*layout.stride);
+			}
+		} else {
+			std::memcpy(arr.data(), span.data(), size_bytes);
+		}
 	}
-	if (ads.min) { apply_limit<Bound::eFloor>(arr.span(), ads.min.array_view(), ads.component_coeff); }
-	if (ads.max) { apply_limit<Bound::eCeil>(arr.span(), ads.max.array_view(), ads.component_coeff); }
+	if (layout.min) { apply_limit<Bound::eFloor>(arr.span(), layout.min.array_view(), layout.component_coeff); }
+	if (layout.max) { apply_limit<Bound::eCeil>(arr.span(), layout.max.array_view(), layout.component_coeff); }
 	arr.debug_refresh();
 	return arr;
 }
@@ -219,53 +215,71 @@ Transform get_transform(dj::Json const& node) {
 	return ret;
 }
 
-std::vector<Vec3> to_rgbs(gltf2cpp::Accessor const& accessor) {
+std::vector<Vec<3>> to_rgbs(gltf2cpp::Accessor const& accessor) {
 	EXPECT(accessor.component_type == gltf2cpp::ComponentType::eFloat); // facade restriction
 	if (accessor.type == gltf2cpp::Accessor::Type::eVec3) { return accessor.to_vec<3>(); }
 	auto const vec4 = accessor.to_vec<4>(); // spec
-	auto ret = std::vector<Vec3>{};
+	auto ret = std::vector<Vec<3>>{};
 	ret.reserve(vec4.size());
 	for (auto& v : vec4) { ret.push_back({v[0], v[1], v[2]}); }
 	return ret;
 }
 
+std::vector<UVec<4>> to_joints(gltf2cpp::Accessor const& accessor) {
+	auto ret = std::vector<UVec<4>>{};
+	auto in = accessor.to_u32();
+	assert(in.size() % 4 == 0);
+	ret.resize(in.size() / 4);
+	std::memcpy(ret.data(), in.data(), std::span{in}.size_bytes());
+	return ret;
+}
+
+std::vector<Vec<4>> to_weights(gltf2cpp::Accessor const& accessor) {
+	if (accessor.component_type == gltf2cpp::ComponentType::eFloat) { return accessor.to_vec<4>(); }
+	return {};
+}
+
 struct GltfParser {
 	GetBytes const& get_bytes;
-	Root& storage;
-	std::vector<Buffer> buffers{};
-	std::vector<BufferView> buffer_views{};
+	Root& root;
 
 	void buffer(dj::Json const& json) {
-		auto& b = buffers.emplace_back();
+		auto& b = root.buffers.emplace_back();
 		auto const uri = json["uri"].as_string();
 		EXPECT(!uri.empty());
 		if (auto i = get_base64_start(uri); i != std::string_view::npos) {
-			b = base64_decode(uri.substr(i));
+			b.bytes = base64_decode(uri.substr(i));
 		} else if (get_bytes) {
-			b = get_bytes(uri);
+			b.bytes = ByteArray{get_bytes(uri)};
 		}
 	}
 
 	void buffer_view(dj::Json const& json) {
-		auto& bv = buffer_views.emplace_back();
+		auto& bv = root.buffer_views.emplace_back();
 		EXPECT(json.contains("buffer") && json.contains("byteLength"));
 		bv.buffer = json["buffer"].as<std::size_t>();
 		bv.length = json["byteLength"].as<std::size_t>();
 		bv.offset = json["byteOffset"].as<std::size_t>(0);
 		bv.target = static_cast<BufferTarget>(json["target"].as<int>());
+		if (auto const& stride = json["byteStride"]) { bv.stride = stride.as<std::size_t>(); }
 	}
 
 	void accessor(dj::Json const& json) {
-		auto& a = storage.accessors.emplace_back();
+		auto& a = root.accessors.emplace_back();
 		EXPECT(json.contains("componentType") && json.contains("count") && json.contains("type"));
 		a.component_type = static_cast<ComponentType>(json["componentType"].as<int>());
 		a.type = Accessor::to_type(json["type"].as_string());
 		a.name = json["name"].as_string(a.name);
 		a.normalized = json["normalized"].as_bool(dj::Boolean{false}).value;
+		a.count = json["count"].as<std::size_t>();
 		auto bytes = std::span<std::byte const>{};
+		auto stride = std::optional<std::size_t>{};
+		a.byte_offset = json["byteOffset"].as<std::size_t>(0);
 		if (auto const& bv = json["bufferView"]) {
-			auto const& view = buffer_views[bv.as<std::size_t>()];
-			bytes = view.to_span(buffers[view.buffer]).subspan(json["byteOffset"].as<std::size_t>(0));
+			a.buffer_view = bv.as<std::size_t>();
+			auto const& view = root.buffer_views[*a.buffer_view];
+			bytes = view.to_span(root.buffers).subspan(a.byte_offset);
+			stride = view.stride;
 		}
 		a.extensions = json["extensions"];
 		a.extras = json["extras"];
@@ -273,8 +287,9 @@ struct GltfParser {
 		auto const layout = AccessorLayout{
 			.min = json["min"],
 			.max = json["max"],
-			.count = json["count"].as<std::size_t>(),
+			.count = a.count,
 			.component_coeff = Accessor::type_coeff(a.type),
+			.stride = stride,
 		};
 		a.data = make_accessor_data(bytes, a.component_type, layout);
 	}
@@ -300,7 +315,7 @@ struct GltfParser {
 	}
 
 	void camera(dj::Json const& json) {
-		auto& c = storage.cameras.emplace_back();
+		auto& c = root.cameras.emplace_back();
 		EXPECT(json.contains("type"));
 		c.name = json["name"].as_string(c.name);
 		c.extensions = json["extensions"];
@@ -315,8 +330,8 @@ struct GltfParser {
 	}
 
 	void sampler(dj::Json const& json) {
-		auto& s = storage.samplers.emplace_back();
-		s.name = json["name"].as<std::string>(s.name);
+		auto& s = root.samplers.emplace_back();
+		s.name = json["name"].as<std::string>();
 		if (auto const& min = json["minFilter"]) { s.min_filter = static_cast<Filter>(min.as<int>()); }
 		if (auto const& mag = json["magFilter"]) { s.mag_filter = static_cast<Filter>(mag.as<int>()); }
 		s.wrap_s = static_cast<Wrap>(json["wrapS"].as<int>(static_cast<int>(s.wrap_s)));
@@ -325,16 +340,26 @@ struct GltfParser {
 		s.extras = json["extras"];
 	}
 
+	template <typename F>
+	void populate_indexed(AttributeMap const& attributes, std::string_view prefix, F func) const {
+		for (std::size_t index = 0;; ++index) {
+			auto const key = std::string{prefix} + std::to_string(index);
+			auto it_col = attributes.find(key);
+			if (it_col == attributes.end()) { break; }
+			func(root.accessors[it_col->second]);
+		}
+	}
+
 	template <typename T>
 	void populate(T& out) const {
 		auto const& attributes = out.attributes;
 		auto const it_pos = attributes.find("POSITION");
 		if (it_pos == attributes.end()) { return; }
-		out.positions = storage.accessors[it_pos->second].template to_vec<3>();
-		if (auto it_norm = attributes.find("NORMAL"); it_norm != attributes.end()) { out.normals = storage.accessors[it_norm->second].template to_vec<3>(); }
+		out.positions = root.accessors[it_pos->second].template to_vec<3>();
+		if (auto it_norm = attributes.find("NORMAL"); it_norm != attributes.end()) { out.normals = root.accessors[it_norm->second].template to_vec<3>(); }
 		if (auto it_tan = attributes.find("TANGENT"); it_tan != attributes.end()) {
 			// some sample files use vec3 tangents
-			auto const& accessor = storage.accessors[it_tan->second];
+			auto const& accessor = root.accessors[it_tan->second];
 			if (accessor.type == Accessor::Type::eVec4) {
 				out.tangents = accessor.template to_vec<4>();
 			} else if (accessor.type == Accessor::Type::eVec3) {
@@ -343,20 +368,20 @@ struct GltfParser {
 				for (auto const& v : vec) { out.tangents.push_back({v[0], v[1], v[2], 0.0f}); }
 			}
 		}
-		auto do_populate = [&](std::string_view prefix, auto& out_vec, auto to_vec) {
-			for (std::size_t index = 0;; ++index) {
-				auto const key = std::string{prefix} + std::to_string(index);
-				auto it_col = attributes.find(key);
-				if (it_col == attributes.end()) { break; }
-				auto const& accessor = storage.accessors[it_col->second];
-				if (accessor.component_type == ComponentType::eFloat) {
-					out_vec.push_back(to_vec(accessor));
-					EXPECT(out_vec.back().size() == out.positions.size());
-				}
+		auto populate_rgb = [&](Accessor const& accessor) {
+			if (accessor.component_type == ComponentType::eFloat) {
+				out.colors.push_back(to_rgbs(accessor));
+				EXPECT(out.colors.back().size() == out.positions.size());
 			}
 		};
-		do_populate("COLOR_", out.colors, [](auto const& a) { return to_rgbs(a); });
-		do_populate("TEXCOORD_", out.tex_coords, [](auto const& a) { return a.template to_vec<2>(); });
+		populate_indexed(attributes, "COLOR_", populate_rgb);
+		auto populate_uv = [&](Accessor const& accessor) {
+			if (accessor.component_type == ComponentType::eFloat) {
+				out.tex_coords.push_back(accessor.template to_vec<2>());
+				EXPECT(out.tex_coords.back().size() == out.positions.size());
+			}
+		};
+		populate_indexed(attributes, "TEXCOORD_", populate_uv);
 	}
 
 	Mesh::Primitive primitive(dj::Json const& json) const {
@@ -368,7 +393,7 @@ struct GltfParser {
 		ret.geometry.attributes = make_attributes(json["attributes"]);
 		if (auto const& indices = json["indices"]) {
 			ret.indices = indices.as<std::size_t>();
-			ret.geometry.indices = storage.accessors[*ret.indices].to_u32();
+			ret.geometry.indices = root.accessors[*ret.indices].to_u32();
 		}
 		if (auto const& material = json["material"]) { ret.material = material.as<std::size_t>(); }
 		populate(ret.geometry);
@@ -377,25 +402,30 @@ struct GltfParser {
 			morph_target.attributes = make_attributes(target);
 			populate(morph_target);
 		}
+		auto populate_joint = [&](Accessor const& accessor) { ret.geometry.joints.push_back(to_joints(accessor)); };
+		populate_indexed(ret.geometry.attributes, "JOINTS_", populate_joint);
+		auto populate_weight = [&](Accessor const& accessor) { ret.geometry.weights.push_back(to_weights(accessor)); };
+		populate_indexed(ret.geometry.attributes, "WEIGHTS_", populate_weight);
+		EXPECT(ret.geometry.joints.size() == ret.geometry.weights.size());
 		return ret;
 	}
 
 	void mesh(dj::Json const& json) {
 		auto const& primitives = json["primitives"].array_view();
 		EXPECT(!primitives.empty());
-		auto& m = storage.meshes.emplace_back();
+		auto& m = root.meshes.emplace_back();
 		m.name = json["name"].as_string(m.name);
 		m.extensions = json["extensions"];
 		m.extras = json["extras"];
 		for (auto const& j : primitives) { m.primitives.push_back(primitive(j)); }
 		for (auto const& j : json["weights"].array_view()) { m.weights.push_back(j.as<float>()); }
 		[[maybe_unused]] auto const target_count = m.primitives[0].targets.size();
-		EXPECT(std::all_of(m.primitives.begin(), m.primitives.end(), [target_count](auto const& p) { return p.targets.size() == target_count; }));
+		EXPECT(std::ranges::all_of(m.primitives, [target_count](auto const& p) { return p.targets.size() == target_count; }));
 	}
 
 	void image(dj::Json const& json) {
-		auto& i = storage.images.emplace_back();
-		auto name = std::string{json["name"].as_string(unnamed_v)};
+		auto& i = root.images.emplace_back();
+		auto name = json["name"].as<std::string>();
 		i.extensions = json["extensions"];
 		i.extras = json["extras"];
 		EXPECT(json.contains("uri") || json.contains("bufferView"));
@@ -403,17 +433,17 @@ struct GltfParser {
 			if (auto const it = get_base64_start(uri); it != std::string_view::npos) {
 				i = Image{base64_decode(uri.substr(it)), std::move(name)};
 			} else if (get_bytes) {
-				i = Image{get_bytes(uri), std::move(name)};
+				i = Image{ByteArray{get_bytes(uri)}, std::move(name), std::string{uri}};
 			}
 		} else {
-			auto const& bv = buffer_views[json["bufferView"].as<std::size_t>()];
-			i = Image{to_byte_array(bv.to_span(buffers[bv.buffer])), std::move(name)};
+			auto const& bv = root.buffer_views[json["bufferView"].as<std::size_t>()];
+			i = Image{to_byte_array(bv.to_span(root.buffers)), std::move(name)};
 		}
 	}
 
 	void texture(dj::Json const& json) {
-		auto& t = storage.textures.emplace_back();
-		t.name = json["name"].as<std::string>(t.name);
+		auto& t = root.textures.emplace_back();
+		t.name = json["name"].as<std::string>();
 		if (auto const& sampler = json["sampler"]) { t.sampler = sampler.as<std::size_t>(); }
 		EXPECT(json.contains("source"));
 		t.source = json["source"].as<std::size_t>();
@@ -462,7 +492,7 @@ struct GltfParser {
 	}
 
 	void material(dj::Json const& json) {
-		auto& m = storage.materials.emplace_back();
+		auto& m = root.materials.emplace_back();
 		m.name = std::string{json["name"].as_string(m.name)};
 		m.pbr = pbr_metallic_roughness(json["pbrMetallicRoughness"]);
 		m.emissive_factor = get_vec<3>(json["emissiveFactor"]);
@@ -481,7 +511,7 @@ struct GltfParser {
 		ret.extensions = json["extensions"];
 		ret.extras = json["extras"];
 		EXPECT(json.contains("input") && json.contains("output"));
-		ret.input = json["input"].as<std::size_t>();
+		ret.input = std::get<Accessor::Float>(root.accessors.at(json["input"].as<std::size_t>()).data).span();
 		ret.output = json["output"].as<std::size_t>();
 		auto const& interpolation = json["interpolation"].as_string();
 		if (interpolation == "STEP") {
@@ -527,7 +557,7 @@ struct GltfParser {
 	}
 
 	void animation(dj::Json const& json) {
-		auto& a = storage.animations.emplace_back();
+		auto& a = root.animations.emplace_back();
 		a.name = json["name"].as_string(a.name);
 		a.extensions = json["extensions"];
 		a.extras = json["extras"];
@@ -536,20 +566,21 @@ struct GltfParser {
 	}
 
 	void skin(dj::Json const& json) {
-		auto& s = storage.skins.emplace_back();
+		auto& s = root.skins.emplace_back();
 		s.name = json["name"].as_string(s.name);
 		s.extensions = json["extensions"];
 		s.extras = json["extras"];
 		EXPECT(json.contains("joints"));
 		for (auto const& joint : json["joints"].array_view()) { s.joints.push_back(joint.as<std::size_t>()); }
-		if (auto const& ibm = json["inverseBindMatrices"]) { s.inverseBindMatrices = ibm.as<std::size_t>(); }
+		if (auto const& ibm = json["inverseBindMatrices"]) {
+			auto const& source = root.accessors.at(ibm.as<std::size_t>());
+			s.inverse_bind_matrices = source.to_mat4();
+		}
 		if (auto const& skeleton = json["skeleton"]) { s.skeleton = skeleton.as<std::size_t>(); }
 	}
 
 	void parse(dj::Json const& scene) {
-		buffers.clear();
-		buffer_views.clear();
-		storage = {};
+		root = {};
 
 		for (auto const& b : scene["buffers"].array_view()) { buffer(b); }
 		for (auto const& bv : scene["bufferViews"].array_view()) { buffer_view(bv); }
@@ -562,15 +593,16 @@ struct GltfParser {
 		for (auto const& m : scene["meshes"].array_view()) { mesh(m); }
 		for (auto const& m : scene["materials"].array_view()) { material(m); }
 		for (auto const& a : scene["animations"].array_view()) { animation(a); }
+		for (auto const& a : scene["skins"].array_view()) { skin(a); }
 
 		// Texture will use ColourSpace::sRGB by default; change non-colour textures to be linear
-		auto set_linear = [this](std::size_t index) { storage.textures[index].linear = true; };
+		auto set_linear = [this](std::size_t index) { root.textures[index].linear = true; };
 
 		// Determine whether a texture points to colour data by referring to the material(s) it is used in
 		// In our case all material textures except pbr.base_colour_texture and emissive_texture are linear
 		// The GLTF spec mandates image formats for corresponding material textures:
 		// https://registry.khronos.org/glTF/specs/2.0/glTF-2.0.html#reference-material
-		for (auto const& m : storage.materials) {
+		for (auto const& m : root.materials) {
 			if (m.pbr.metallic_roughness_texture) { set_linear(m.pbr.metallic_roughness_texture->texture); }
 			if (m.occlusion_texture) { set_linear(m.occlusion_texture->info.texture); }
 			if (m.normal_texture) { set_linear(m.normal_texture->info.texture); }
@@ -611,6 +643,14 @@ void detail::expect(bool pred, char const* expr) noexcept(false) {
 	throw Error{print_error(expr)};
 }
 
+std::span<std::byte const> BufferView::to_span(std::span<Buffer const> buffers) const {
+	if (buffer >= buffers.size()) { throw Error{"Invalid buffer view"}; }
+	auto const& b = buffers[buffer];
+	if (offset + b.bytes.size() < length) { throw Error{"Invalid buffer view"}; }
+	if (length == 0) { return {}; }
+	return {&b.bytes[offset], length};
+}
+
 auto Accessor::to_type(std::string_view const key) -> Type {
 	static constexpr std::string_view type_key_v[] = {"SCALAR", "VEC2", "VEC3", "VEC4", "MAT2", "MAT3", "MAT4"};
 	static_assert(std::size(type_key_v) == static_cast<std::size_t>(Type::eCOUNT_));
@@ -624,7 +664,6 @@ auto Accessor::to_type(std::string_view const key) -> Type {
 }
 
 std::vector<std::uint32_t> Accessor::to_u32() const {
-	EXPECT(type == gltf2cpp::Accessor::Type::eScalar);
 	auto ret = std::vector<std::uint32_t>{};
 	if (auto const* d = std::get_if<UnsignedInt>(&data)) {
 		ret.resize(d->size());
@@ -637,6 +676,17 @@ std::vector<std::uint32_t> Accessor::to_u32() const {
 		};
 		std::visit(write, data);
 	}
+	return ret;
+}
+
+std::vector<Mat4x4> Accessor::to_mat4() const {
+	EXPECT(type == Type::eMat4);
+	EXPECT(std::holds_alternative<Float>(data));
+	auto ret = std::vector<Mat4x4>{};
+	auto const& d = std::get<Float>(data);
+	EXPECT(d.size() % 16 == 0);
+	ret.resize(d.size() / 16);
+	std::memcpy(ret.data(), d.data(), d.span().size_bytes());
 	return ret;
 }
 
@@ -657,10 +707,15 @@ Root Parser::parse(GetBytes const& get_bytes) const {
 
 	auto const& nodes = json["nodes"].array_view();
 	ret.nodes.reserve(nodes.size());
+	auto parent_map = std::unordered_map<Index<Node>, Index<Node>>{};
 	for (auto const& jnode : nodes) {
 		auto node = Node{.name = jnode["name"].as<std::string>()};
+		node.self = ret.nodes.size();
 		node.transform = get_transform(jnode);
-		for (auto const& child : jnode["children"].array_view()) { node.children.push_back(child.as<std::size_t>()); }
+		for (auto const& child : jnode["children"].array_view()) {
+			node.children.push_back(child.as<std::size_t>());
+			parent_map.insert_or_assign(node.children.back(), node.self);
+		}
 		for (auto const& weight : jnode["weights"].array_view()) { node.weights.push_back(weight.as<float>()); }
 		if (auto const& mesh = jnode["mesh"]) {
 			node.mesh = mesh.as<std::size_t>();
@@ -674,13 +729,19 @@ Root Parser::parse(GetBytes const& get_bytes) const {
 			}
 		}
 		if (auto const& camera = jnode["camera"]) { node.camera = camera.as<std::size_t>(); }
+		if (auto const& skin = jnode["skin"]) { node.skin = skin.as<std::size_t>(); }
 		ret.nodes.push_back(std::move(node));
+	}
+	// assign parents
+	for (auto& node : ret.nodes) {
+		if (auto it = parent_map.find(node.self); it != parent_map.end()) { node.parent = it->second; }
 	}
 
 	auto const& scenes = json["scenes"].array_view();
 	ret.scenes.reserve(scenes.size());
 	for (auto const& scene : scenes) {
 		auto& s = ret.scenes.emplace_back();
+		s.name = scene["name"].as_string();
 		auto const& root_nodes = scene["nodes"].array_view();
 		s.root_nodes.reserve(root_nodes.size());
 		for (auto const& node : root_nodes) { s.root_nodes.push_back(node.as<std::size_t>()); }
@@ -701,6 +762,8 @@ Root parse(char const* json_path) {
 	if (!fs::is_regular_file(json_path)) { return {}; }
 	auto json = dj::Json::from_file(json_path);
 	if (!json) { return {}; }
-	return Parser{json}.parse(Reader{fs::path{json_path}.parent_path()});
+	auto reader = Reader{fs::path{json_path}.parent_path()};
+	auto get_bytes = [&reader](std::string_view uri) { return reader(std::string{uri}); };
+	return Parser{json}.parse(get_bytes);
 }
 } // namespace gltf2cpp

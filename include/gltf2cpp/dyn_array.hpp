@@ -1,5 +1,6 @@
 #pragma once
 #include <cassert>
+#include <cstring>
 #include <memory>
 #include <span>
 
@@ -26,6 +27,12 @@ class DynArray {
 	/// \param size Size of the data being transferred
 	///
 	explicit DynArray(std::unique_ptr<T[]>&& data, std::size_t size) : m_data(std::move(data)), m_size(size) {}
+
+	///
+	/// \brief Construct a dynamic array and populate it with the given data.
+	/// \param data Data to copy
+	///
+	explicit DynArray(std::span<T const> data) : DynArray(data.size()) { std::memcpy(m_data.get(), data.data(), data.size()); }
 
 	///
 	/// \brief Obtain a pointer to the data.

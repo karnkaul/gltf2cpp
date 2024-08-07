@@ -4,7 +4,7 @@ set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_DEBUG_POSTFIX "-d")
 
-set(project_version 0.1.0)
+set(project_version 0.2.0)
 
 project(gltf2cpp VERSION ${project_version})
 
@@ -23,7 +23,7 @@ if(NOT TARGET djson)
   FetchContent_Declare(
     djson
     GIT_REPOSITORY https://github.com/karnkaul/djson
-    GIT_TAG 129c0b1de0d834e3e9bfb7f0a2403e26a50e66d3
+    GIT_TAG v2.1.1
   )
   FetchContent_MakeAvailable(djson)
 endif()

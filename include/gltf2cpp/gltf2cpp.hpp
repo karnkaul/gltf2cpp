@@ -15,28 +15,30 @@ namespace gltf2cpp {
 ///
 /// \brief Alias for an index for a particular type.
 ///
-template <typename T>
+template <typename Type>
 using Index = std::size_t;
 
 ///
-/// \brief Geometric vector modelled as an array of floats.
+/// \brief Geometric vector modelled as an array of Types.
 ///
-template <std::size_t Dim>
-using Vec = std::array<float, Dim>;
+template <typename Type, std::size_t Dim>
+using TVec = std::array<Type, Dim>;
 
-using Vec2 = Vec<2>;
-using Vec3 = Vec<3>;
-using Vec4 = Vec<4>;
+template <std::size_t Dim>
+using Vec = TVec<float, Dim>;
+
+template <std::size_t Dim>
+using UVec = TVec<std::uint32_t, Dim>;
 
 ///
 /// \brief 4x4 float matrix.
 ///
-using Mat4x4 = std::array<Vec4, 4>;
+using Mat4x4 = std::array<Vec<4>, 4>;
 
 ///
 /// \brief Alias for callable that returns bytes given a URI.
 ///
-using GetBytes = std::function<ByteArray(std::string_view)>;
+using GetBytes = std::function<std::span<std::byte const>(std::string_view)>;
 
 ///
 /// \brief GLTF Material Alpha Mode.
@@ -47,23 +49,12 @@ enum class AlphaMode : std::uint32_t {
 	eMask,
 };
 
-enum class PrimitiveMode : std::uint32_t {
-	ePoints = 0,
-	eLines = 1,
-	eLineLoop = 2,
-	eLineStrip = 3,
-	eTriangles = 4,
-	eTriangleStrip = 5,
-	eTriangleFan = 6,
-};
-
 ///
-/// \brief GLTF Animation Interpolation.
+/// \brief GLTF Buffer Target.
 ///
-enum class Interpolation : std::uint32_t {
-	eLinear,
-	eStep,
-	eCubicSpline,
+enum class BufferTarget : std::uint32_t {
+	eArrayBuffer = 34962,
+	eElementArrayBuffer = 34693,
 };
 
 ///
@@ -91,12 +82,48 @@ enum class Filter : std::uint32_t {
 };
 
 ///
+/// \brief GLTF Animation Interpolation.
+///
+enum class Interpolation : std::uint32_t {
+	eLinear,
+	eStep,
+	eCubicSpline,
+};
+
+///
+/// \brief GLTF Primitive Mode.
+///
+enum class PrimitiveMode : std::uint32_t {
+	ePoints = 0,
+	eLines = 1,
+	eLineLoop = 2,
+	eLineStrip = 3,
+	eTriangles = 4,
+	eTriangleStrip = 5,
+	eTriangleFan = 6,
+};
+
+///
 /// \brief GLTF Sampler Wrap.
 ///
 enum class Wrap : std::uint32_t {
 	eClampEdge = 33071,
 	eMirrorRepeat = 33648,
 	eRepeat = 10497,
+};
+
+struct Buffer {
+	ByteArray bytes{};
+};
+
+struct BufferView {
+	Index<Buffer> buffer{};
+	std::size_t offset{};
+	std::size_t length{};
+	BufferTarget target{};
+	std::optional<std::size_t> stride{};
+
+	std::span<std::byte const> to_span(std::span<Buffer const> buffers) const;
 };
 
 ///
@@ -129,9 +156,9 @@ using FromComponentType = decltype(from_component_type<C>());
 /// \brief GLTF Transform encoded as Translation, Rotation, Scale.
 ///
 struct Trs {
-	Vec3 translation{};
-	Vec4 rotation{{1.0f, 0.0f, 0.0f, 0.0f}};
-	Vec3 scale{Vec3{{1.0f, 1.0f, 1.0f}}};
+	Vec<3> translation{};
+	Vec<4> rotation{{1.0f, 0.0f, 0.0f, 0.0f}};
+	Vec<3> scale{Vec<3>{{1.0f, 1.0f, 1.0f}}};
 };
 
 ///
@@ -140,17 +167,12 @@ struct Trs {
 using Transform = std::variant<Trs, Mat4x4>;
 
 ///
-/// \brief Default name.
-///
-inline constexpr char const* unnamed_v{"(Unnamed)"};
-
-///
 /// \brief GLTF Accessor.
 ///
 /// gltf2cpp does not expose raw GLTF Buffers or BufferViews; instead each Accessor's data
 /// is pre-interpreted and stored directly within it as a flat array of ComponentType.
 /// Eg, Data for Type::eVec4 / ComponentType::Float will contain 4x float components
-/// for each element (and not a Vec4 for each element).
+/// for each element (and not a Vec<4> for each element).
 ///
 struct Accessor {
 	template <ComponentType C>
@@ -167,10 +189,13 @@ struct Accessor {
 
 	enum class Type { eScalar, eVec2, eVec3, eVec4, eMat2, eMat3, eMat4, eCOUNT_ };
 
-	std::string name{unnamed_v};
+	std::string name{};
+	std::optional<Index<BufferView>> buffer_view{};
+	std::size_t byte_offset{};
 	Data data{};
 	ComponentType component_type{};
 	Type type{};
+	std::size_t count{};
 	bool normalized{};
 	dj::Json extensions{};
 	dj::Json extras{};
@@ -194,7 +219,7 @@ struct Accessor {
 	/// \brief Obtain data as a vector of u32.
 	/// \returns Data as std::vector of u32
 	///
-	/// type must be Type::eScalar, and component_type must be unsigned.
+	/// component_type must be unsigned.
 	///
 	std::vector<std::uint32_t> to_u32() const;
 
@@ -206,6 +231,14 @@ struct Accessor {
 	///
 	template <std::size_t Dim>
 	std::vector<Vec<Dim>> to_vec() const;
+
+	///
+	/// \brief Obtain data as a vector of Mat4x4
+	/// \returns Data as std::vefctor of Mat4x4
+	///
+	/// type must be Type::eMat4, and component_type must be ComponentType::eFloat.
+	///
+	std::vector<Mat4x4> to_mat4() const;
 };
 
 struct Node;
@@ -223,7 +256,7 @@ struct Animation {
 	/// \brief GLTF Animation Sampler.
 	///
 	struct Sampler {
-		Index<Accessor> input{};
+		std::span<float const> input{};
 		Interpolation interpolation{};
 		Index<Accessor> output{};
 		dj::Json extensions{};
@@ -250,7 +283,7 @@ struct Animation {
 		dj::Json extras{};
 	};
 
-	std::string name{unnamed_v};
+	std::string name{};
 	std::vector<Channel> channels{};
 	std::vector<Sampler> samplers{};
 	dj::Json extensions{};
@@ -294,7 +327,7 @@ struct Camera {
 		float znear{};
 	};
 
-	std::string name{unnamed_v};
+	std::string name{};
 	std::variant<Perspective, Orthographic> payload{Perspective{}};
 	dj::Json extensions{};
 	dj::Json extras{};
@@ -305,7 +338,8 @@ struct Camera {
 ///
 struct Image {
 	ByteArray bytes{};
-	std::string name{unnamed_v};
+	std::string name{};
+	std::string source_filename{};
 	dj::Json extensions{};
 	dj::Json extras{};
 };
@@ -324,20 +358,28 @@ using AttributeMap = std::unordered_map<std::string, Index<Accessor>>;
 /// tex_coords and colors are nested vectors, where the Ith element corresponds to SEMANTIC_I,
 /// eg. tex_coords[2] is populated from the TEXCOORD_2 Attribute's Accessor.
 ///
-/// These vectors will only be populated if the corresponding Accessor's ComponentType is eFloat.
+/// These vectors (except indices and joints) will only be populated if the corresponding
+/// Accessor's ComponentType is eFloat.
 /// For other component types, obtain and use the Accessor directly.
 /// Since the POSITION Attribute is required to be in Accessor::Type::eVec3 / ComponentType::eFloat
 /// format by the GLTF spec, .positions is always expected to be populated.
-/// All vectors will either be empty or the same size as positions.
+/// normals, tangents, tex_coords, and colors will either be empty or the same size as positions.
+/// joints and weights will have the same size.
+///
+/// Note: weights is only parsed if the ComponentType is eFloat. Otherwise the corresponding
+/// array will be empty.
 ///
 struct Geometry {
 	AttributeMap attributes{};
-	std::vector<Vec3> positions{};
-	std::vector<Vec3> normals{};
-	std::vector<Vec4> tangents{};
-	std::vector<std::vector<Vec2>> tex_coords{};
-	std::vector<std::vector<Vec3>> colors{};
+	std::vector<Vec<3>> positions{};
+	std::vector<Vec<3>> normals{};
+	std::vector<Vec<4>> tangents{};
+	std::vector<std::vector<Vec<2>>> tex_coords{};
+	std::vector<std::vector<Vec<3>>> colors{};
 	std::vector<std::uint32_t> indices{};
+
+	std::vector<std::vector<UVec<4>>> joints{};
+	std::vector<std::vector<Vec<4>>> weights{};
 };
 
 struct Texture;
@@ -378,7 +420,7 @@ struct OcclusionTextureInfo {
 struct PbrMetallicRoughness {
 	std::optional<TextureInfo> base_color_texture{};
 	std::optional<TextureInfo> metallic_roughness_texture{};
-	Vec4 base_color_factor{1.0f, 1.0f, 1.0f, 1.0f};
+	Vec<4> base_color_factor{1.0f, 1.0f, 1.0f, 1.0f};
 	float metallic_factor{1.0f};
 	float roughness_factor{1.0f};
 	dj::Json extensions{};
@@ -394,7 +436,7 @@ struct Material {
 	std::optional<NormalTextureInfo> normal_texture{};
 	std::optional<OcclusionTextureInfo> occlusion_texture{};
 	std::optional<TextureInfo> emissive_texture{};
-	Vec3 emissive_factor{};
+	Vec<3> emissive_factor{};
 	AlphaMode alpha_mode{AlphaMode::eOpaque};
 	float alpha_cutoff{0.5f};
 	bool double_sided{};
@@ -407,11 +449,11 @@ struct Material {
 ///
 struct MorphTarget {
 	AttributeMap attributes{};
-	std::vector<Vec3> positions{};
-	std::vector<Vec3> normals{};
-	std::vector<Vec4> tangents{};
-	std::vector<std::vector<Vec2>> tex_coords{};
-	std::vector<std::vector<Vec3>> colors{};
+	std::vector<Vec<3>> positions{};
+	std::vector<Vec<3>> normals{};
+	std::vector<Vec<4>> tangents{};
+	std::vector<std::vector<Vec<2>>> tex_coords{};
+	std::vector<std::vector<Vec<3>>> colors{};
 };
 
 ///
@@ -431,7 +473,7 @@ struct Mesh {
 		dj::Json extras{};
 	};
 
-	std::string name{unnamed_v};
+	std::string name{};
 	std::vector<Primitive> primitives{};
 	std::vector<float> weights{};
 	dj::Json extensions{};
@@ -444,9 +486,11 @@ struct Skin;
 /// \brief GLTF Scene Node.
 ///
 struct Node {
-	std::string name{unnamed_v};
+	std::string name{};
 	Transform transform{};
+	Index<Node> self{};
 	std::vector<Index<Node>> children{};
+	std::optional<Index<Node>> parent{};
 	std::optional<Index<Camera>> camera{};
 	std::optional<Index<Mesh>> mesh{};
 	std::optional<Index<Skin>> skin{};
@@ -459,7 +503,7 @@ struct Node {
 /// \brief GLTF Texture Sampler.
 ///
 struct Sampler {
-	std::string name{unnamed_v};
+	std::string name{};
 	std::optional<Filter> min_filter{};
 	std::optional<Filter> mag_filter{};
 	Wrap wrap_s{Wrap::eRepeat};
@@ -472,8 +516,8 @@ struct Sampler {
 /// \brief GLTF Skin.
 ///
 struct Skin {
-	std::string name{unnamed_v};
-	std::optional<Index<Accessor>> inverseBindMatrices{};
+	std::string name{};
+	std::vector<Mat4x4> inverse_bind_matrices{};
 	std::optional<Index<Node>> skeleton{};
 	std::vector<Index<Node>> joints{};
 	dj::Json extensions{};
@@ -484,7 +528,7 @@ struct Skin {
 /// \brief GLTF Texture.
 ///
 struct Texture {
-	std::string name{unnamed_v};
+	std::string name{};
 	std::optional<Index<Sampler>> sampler{};
 	Index<Image> source{};
 	bool linear{};
@@ -496,6 +540,7 @@ struct Texture {
 /// \brief GLTF Scene.
 ///
 struct Scene {
+	std::string name{};
 	std::vector<Index<Node>> root_nodes{};
 	dj::Json extensions{};
 	dj::Json extras{};
@@ -518,10 +563,10 @@ struct Metadata {
 /// \brief GLTF root.
 ///
 /// Contains all the data parsed from a GLTF file (and resources it points to).
-/// Buffers and BufferViews are not exposed, the raw bytes in those data are refined
-/// into typed vectors in each Accessor.
 ///
 struct Root {
+	std::vector<Buffer> buffers{};
+	std::vector<BufferView> buffer_views{};
 	std::vector<Accessor> accessors{};
 	std::vector<Animation> animations{};
 	std::vector<Camera> cameras{};
