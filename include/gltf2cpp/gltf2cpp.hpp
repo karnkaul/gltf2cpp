@@ -256,7 +256,7 @@ struct Animation {
 	/// \brief GLTF Animation Sampler.
 	///
 	struct Sampler {
-		Index<Accessor> input{};
+		std::span<float const> input{};
 		Interpolation interpolation{};
 		Index<Accessor> output{};
 		dj::Json extensions{};

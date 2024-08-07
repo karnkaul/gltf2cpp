@@ -511,7 +511,7 @@ struct GltfParser {
 		ret.extensions = json["extensions"];
 		ret.extras = json["extras"];
 		EXPECT(json.contains("input") && json.contains("output"));
-		ret.input = json["input"].as<std::size_t>();
+		ret.input = std::get<Accessor::Float>(root.accessors.at(json["input"].as<std::size_t>()).data).span();
 		ret.output = json["output"].as<std::size_t>();
 		auto const& interpolation = json["interpolation"].as_string();
 		if (interpolation == "STEP") {
