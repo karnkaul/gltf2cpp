@@ -331,7 +331,7 @@ struct GltfParser {
 
 	void sampler(dj::Json const& json) {
 		auto& s = root.samplers.emplace_back();
-		s.name = json["name"].as<std::string>(s.name);
+		s.name = json["name"].as<std::string>();
 		if (auto const& min = json["minFilter"]) { s.min_filter = static_cast<Filter>(min.as<int>()); }
 		if (auto const& mag = json["magFilter"]) { s.mag_filter = static_cast<Filter>(mag.as<int>()); }
 		s.wrap_s = static_cast<Wrap>(json["wrapS"].as<int>(static_cast<int>(s.wrap_s)));
@@ -425,7 +425,7 @@ struct GltfParser {
 
 	void image(dj::Json const& json) {
 		auto& i = root.images.emplace_back();
-		auto name = std::string{json["name"].as_string(unnamed_v)};
+		auto name = json["name"].as<std::string>();
 		i.extensions = json["extensions"];
 		i.extras = json["extras"];
 		EXPECT(json.contains("uri") || json.contains("bufferView"));
@@ -443,7 +443,7 @@ struct GltfParser {
 
 	void texture(dj::Json const& json) {
 		auto& t = root.textures.emplace_back();
-		t.name = json["name"].as<std::string>(t.name);
+		t.name = json["name"].as<std::string>();
 		if (auto const& sampler = json["sampler"]) { t.sampler = sampler.as<std::size_t>(); }
 		EXPECT(json.contains("source"));
 		t.source = json["source"].as<std::size_t>();
@@ -572,7 +572,10 @@ struct GltfParser {
 		s.extras = json["extras"];
 		EXPECT(json.contains("joints"));
 		for (auto const& joint : json["joints"].array_view()) { s.joints.push_back(joint.as<std::size_t>()); }
-		if (auto const& ibm = json["inverseBindMatrices"]) { s.inverse_bind_matrices = ibm.as<std::size_t>(); }
+		if (auto const& ibm = json["inverseBindMatrices"]) {
+			auto const& source = root.accessors.at(ibm.as<std::size_t>());
+			s.inverse_bind_matrices = source.to_mat4();
+		}
 		if (auto const& skeleton = json["skeleton"]) { s.skeleton = skeleton.as<std::size_t>(); }
 	}
 
@@ -738,6 +741,7 @@ Root Parser::parse(GetBytes const& get_bytes) const {
 	ret.scenes.reserve(scenes.size());
 	for (auto const& scene : scenes) {
 		auto& s = ret.scenes.emplace_back();
+		s.name = scene["name"].as_string();
 		auto const& root_nodes = scene["nodes"].array_view();
 		s.root_nodes.reserve(root_nodes.size());
 		for (auto const& node : root_nodes) { s.root_nodes.push_back(node.as<std::size_t>()); }

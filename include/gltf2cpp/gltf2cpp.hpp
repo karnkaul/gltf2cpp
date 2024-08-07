@@ -167,11 +167,6 @@ struct Trs {
 using Transform = std::variant<Trs, Mat4x4>;
 
 ///
-/// \brief Default name.
-///
-inline constexpr char const* unnamed_v{"(Unnamed)"};
-
-///
 /// \brief GLTF Accessor.
 ///
 /// gltf2cpp does not expose raw GLTF Buffers or BufferViews; instead each Accessor's data
@@ -194,7 +189,7 @@ struct Accessor {
 
 	enum class Type { eScalar, eVec2, eVec3, eVec4, eMat2, eMat3, eMat4, eCOUNT_ };
 
-	std::string name{unnamed_v};
+	std::string name{};
 	std::optional<Index<BufferView>> buffer_view{};
 	std::size_t byte_offset{};
 	Data data{};
@@ -288,7 +283,7 @@ struct Animation {
 		dj::Json extras{};
 	};
 
-	std::string name{unnamed_v};
+	std::string name{};
 	std::vector<Channel> channels{};
 	std::vector<Sampler> samplers{};
 	dj::Json extensions{};
@@ -332,7 +327,7 @@ struct Camera {
 		float znear{};
 	};
 
-	std::string name{unnamed_v};
+	std::string name{};
 	std::variant<Perspective, Orthographic> payload{Perspective{}};
 	dj::Json extensions{};
 	dj::Json extras{};
@@ -343,7 +338,7 @@ struct Camera {
 ///
 struct Image {
 	ByteArray bytes{};
-	std::string name{unnamed_v};
+	std::string name{};
 	std::string source_filename{};
 	dj::Json extensions{};
 	dj::Json extras{};
@@ -478,7 +473,7 @@ struct Mesh {
 		dj::Json extras{};
 	};
 
-	std::string name{unnamed_v};
+	std::string name{};
 	std::vector<Primitive> primitives{};
 	std::vector<float> weights{};
 	dj::Json extensions{};
@@ -491,7 +486,7 @@ struct Skin;
 /// \brief GLTF Scene Node.
 ///
 struct Node {
-	std::string name{unnamed_v};
+	std::string name{};
 	Transform transform{};
 	Index<Node> self{};
 	std::vector<Index<Node>> children{};
@@ -508,7 +503,7 @@ struct Node {
 /// \brief GLTF Texture Sampler.
 ///
 struct Sampler {
-	std::string name{unnamed_v};
+	std::string name{};
 	std::optional<Filter> min_filter{};
 	std::optional<Filter> mag_filter{};
 	Wrap wrap_s{Wrap::eRepeat};
@@ -521,8 +516,8 @@ struct Sampler {
 /// \brief GLTF Skin.
 ///
 struct Skin {
-	std::string name{unnamed_v};
-	std::optional<Index<Accessor>> inverse_bind_matrices{};
+	std::string name{};
+	std::vector<Mat4x4> inverse_bind_matrices{};
 	std::optional<Index<Node>> skeleton{};
 	std::vector<Index<Node>> joints{};
 	dj::Json extensions{};
@@ -533,7 +528,7 @@ struct Skin {
 /// \brief GLTF Texture.
 ///
 struct Texture {
-	std::string name{unnamed_v};
+	std::string name{};
 	std::optional<Index<Sampler>> sampler{};
 	Index<Image> source{};
 	bool linear{};
@@ -545,6 +540,7 @@ struct Texture {
 /// \brief GLTF Scene.
 ///
 struct Scene {
+	std::string name{};
 	std::vector<Index<Node>> root_nodes{};
 	dj::Json extensions{};
 	dj::Json extras{};
